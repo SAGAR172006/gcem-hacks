@@ -1,0 +1,194 @@
+/* global React */
+const { useState: useStateUL, useRef: useRefUL, useEffect: useEffectUL } = React;
+
+// ============================================
+// Quick Learning — drag/drop upload
+// ============================================
+function UploadPage({ persona, onPersonaChange, onSubmit, onBack, dark, onToggleDark }) {
+  const [dragOver, setDragOver] = useStateUL(false);
+  const [file, setFile] = useStateUL(null);
+  const inputRef = useRefUL(null);
+
+  const accept = (f) => {
+    if (!f) return;
+    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + ' KB' });
+  };
+
+  return (
+    <div className="upload-page fade-in">
+      <TopBar persona={persona} onChangePersona={onPersonaChange} dark={dark} onToggleDark={onToggleDark}/>
+
+      <div className="upload-wrap">
+        <div className="upload-head">
+          <span className="eyebrow">Quick learning</span>
+          <h2 className="upload-h1">Bring your own source.</h2>
+          <p className="body" style={{ maxWidth: 560, margin: '0 auto' }}>
+            Upload a PDF or image and AMI will build a focused learning module from it — staying strictly within your source.
+          </p>
+        </div>
+
+        <div
+          className={`dropzone ${dragOver ? 'over' : ''} ${file ? 'has-file' : ''}`}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => { e.preventDefault(); setDragOver(false); accept(e.dataTransfer.files?.[0]); }}
+          onClick={() => inputRef.current?.click()}
+        >
+          <input ref={inputRef} type="file" accept=".pdf,image/*" hidden onChange={e => accept(e.target.files?.[0])}/>
+
+          {!file ? (
+            <>
+              <div className="dz-art">
+                <div className="dz-doc dz-doc-1"><Ico.Pdf/></div>
+                <div className="dz-doc dz-doc-2"><Ico.Pdf/></div>
+                <div className="dz-doc dz-doc-3"><Ico.Camera/></div>
+                <div className="dz-orbit"></div>
+              </div>
+              <h3 className="h3">Drop your file here</h3>
+              <p className="muted" style={{ fontSize: 14, margin: 0 }}>
+                or <span style={{ color: 'var(--peach-500)', fontWeight: 600 }}>browse</span> to choose · PDF or image
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="file-tile">
+                <span className="file-tile-icon"><Ico.Pdf/></span>
+                <div>
+                  <div className="file-tile-name">{file.name}</div>
+                  <div className="muted" style={{ fontSize: 12 }}>{file.size} · ready to process</div>
+                </div>
+                <button className="icon-btn" onClick={e => { e.stopPropagation(); setFile(null); }}><Ico.Close/></button>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="warn-card">
+          <span className="warn-dot"/>
+          <div>
+            <strong>Heads up — </strong>
+            Please upload a limited-page PDF or image file. Our AI will analyze your media to generate focused learning material — bypassing the internet entirely.
+          </div>
+        </div>
+
+        <div className="upload-actions">
+          <button className="pill pill-ghost" onClick={onBack}><Ico.ArrowLeft/> Back to search</button>
+          <button className="pill pill-primary" disabled={!file} onClick={() => onSubmit(file)} style={{ opacity: file ? 1 : 0.5 }}>
+            <Ico.Sparkle/> Generate learning module
+          </button>
+        </div>
+      </div>
+
+      <style>{`
+        .upload-page { padding-bottom: 80px; }
+        .upload-wrap {
+          max-width: 720px;
+          margin: 24px auto 0;
+          padding: 0 24px;
+          display: flex; flex-direction: column; gap: 24px;
+          align-items: center;
+        }
+        .upload-head { text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+        .upload-h1 {
+          font-size: clamp(34px, 4.4vw, 48px);
+          font-weight: 700;
+          letter-spacing: -0.03em;
+          line-height: 1.05;
+          margin: 0;
+        }
+        .dropzone {
+          width: 100%;
+          background: var(--paper);
+          border: 2px dashed var(--ink-100);
+          border-radius: var(--r-xl);
+          padding: 56px 32px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 16px;
+          cursor: pointer;
+          transition: all 0.4s var(--ease-organic);
+          box-shadow: var(--shadow-sm);
+        }
+        .dropzone:hover, .dropzone.over {
+          border-color: var(--peach-300);
+          background: var(--peach-50);
+          transform: translateY(-2px);
+          box-shadow: var(--shadow-md);
+        }
+        .dropzone.has-file { border-style: solid; border-color: var(--peach-200); }
+
+        .dz-art {
+          position: relative;
+          width: 140px; height: 100px;
+          margin-bottom: 8px;
+        }
+        .dz-doc {
+          position: absolute;
+          width: 60px; height: 76px;
+          border-radius: 10px;
+          background: var(--paper);
+          border: 1.5px solid var(--ink-100);
+          display: grid; place-items: center;
+          color: var(--peach-500);
+          box-shadow: var(--shadow-sm);
+          transition: transform 0.5s var(--ease-organic);
+        }
+        .dz-doc-1 { left: 10px; top: 12px; transform: rotate(-12deg); animation: doc-1 4s ease-in-out infinite; }
+        .dz-doc-2 { left: 40px; top: 4px; z-index: 2; animation: doc-2 4s ease-in-out infinite; }
+        .dz-doc-3 { left: 70px; top: 16px; transform: rotate(10deg); animation: doc-3 4s ease-in-out infinite; }
+        @keyframes doc-1 { 0%,100% { transform: rotate(-12deg) translateY(0); } 50% { transform: rotate(-14deg) translateY(-4px); } }
+        @keyframes doc-2 { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+        @keyframes doc-3 { 0%,100% { transform: rotate(10deg) translateY(0); } 50% { transform: rotate(12deg) translateY(-4px); } }
+        .dz-orbit {
+          position: absolute; inset: -8px;
+          border-radius: 50%;
+          border: 1.5px dashed var(--lav-200);
+          animation: spin-slow 20s linear infinite;
+          opacity: 0.6;
+        }
+
+        .file-tile {
+          display: flex; align-items: center; gap: 14px;
+          padding: 16px 18px;
+          background: var(--paper);
+          border-radius: var(--r-md);
+          width: 100%;
+          max-width: 480px;
+          box-shadow: var(--shadow-sm);
+        }
+        .file-tile-icon {
+          width: 40px; height: 40px;
+          border-radius: 10px;
+          background: var(--peach-50);
+          color: var(--peach-500);
+          display: grid; place-items: center;
+        }
+        .file-tile-name { font-weight: 600; font-size: 14px; }
+
+        .warn-card {
+          display: flex; gap: 12px; align-items: flex-start;
+          background: var(--lav-50);
+          border-radius: var(--r-md);
+          padding: 14px 16px;
+          font-size: 13.5px;
+          color: var(--ink-700);
+          line-height: 1.5;
+          border: 1px solid var(--lav-100);
+          max-width: 600px;
+        }
+        .warn-dot {
+          width: 8px; height: 8px; border-radius: 50%;
+          background: var(--lav-400);
+          margin-top: 7px;
+          flex-shrink: 0;
+          box-shadow: 0 0 0 4px rgba(140, 138, 214, 0.2);
+        }
+
+        .upload-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+      `}</style>
+    </div>
+  );
+}
+
+Object.assign(window, { UploadPage });
