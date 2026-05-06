@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: ami-backend
+    runtime: node
+    rootDir: .
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      # Set these in the Render dashboard — do NOT put real secrets here:
+      # SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY
+      # GEMINI_KEY_1 through GEMINI_KEY_25
+      # UNSPLASH_ACCESS_KEY
+      # SERPAPI_KEY
+      # FRONTEND_URL  (your Vercel URL, e.g. https://ami.vercel.app)

@@ -1,4 +1,8 @@
-const BASE = '/api'
+// In dev: Vite proxy rewrites /api → localhost:3001, so BASE = '/api' works.
+// In production (Vercel): set VITE_API_URL to your Render backend URL, e.g.
+//   VITE_API_URL=https://ami-backend.onrender.com
+// If not set, falls back to relative /api (safe for same-origin deploys).
+const BASE = (import.meta.env.VITE_API_URL ?? '') + '/api'
 
 const TOKEN_KEY = 'ami_token'
 

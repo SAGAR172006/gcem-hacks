@@ -12,7 +12,23 @@ import { demoRouter } from './routers/demo';
 
 const app = express();
 
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+// Allow local dev + any Vercel preview/production URL set via env
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (curl, Render health checks, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Also allow any *.vercel.app preview URL for this project
+    if (origin.endsWith('.vercel.app')) return callback(null, true);
+    callback(new Error('Not allowed by CORS: ' + origin));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use(fileUpload());
 
