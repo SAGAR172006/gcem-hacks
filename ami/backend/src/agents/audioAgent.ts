@@ -1,63 +1,81 @@
-import { TextContent, Persona, AudioContent, AudioChapter } from '../types';
-import { callGemini } from '../services/gemini';
+import { MasterContext, TextContent, AudioContent, AudioChapter } from '../types';
 
-export async function generateAudioScript(textContent: TextContent, persona: Persona): Promise<AudioContent> {
-  const prompt = `Write a conversational audio lesson script for: ${textContent.title}
+/**
+ * Audio Agent — Hub and Spoke, Phase 2 Worker.
+ *
+ * ZERO Gemini calls. Builds a structured audio script from either:
+ *   (a) TextContent (preferred — richer prose to read aloud), or
+ *   (b) MasterContext (fallback — uses key facts and concept definitions)
+ *
+ * The Web Speech API on the frontend reads this script aloud.
+ */
 
-Student level: ${persona.grade}
-Student interest: ${persona.interest}
+export function buildAudioFromTextContent(textContent: TextContent): AudioContent {
+  const proseBlocks = textContent.sections.filter((s: any) => s.kind === 'prose');
+  const objectives = textContent.sections.find((s: any) => s.kind === 'objectives');
 
-The script must:
-- Open with a hook question that connects to ${persona.interest}
-- Sound like a friendly, enthusiastic teacher talking directly to the student (use "you")
-- Be 500-700 words total
-- Include at least one analogy involving ${persona.interest}
-- Cover these topics in order:
-${textContent.toc.map((t, i) => `  ${i + 1}. ${t.title}`).join('\n')}
+  let script = 'Welcome to this audio lesson on ' + textContent.title + '.\n\n';
 
-Mark chapter breaks exactly like this (the text inside is the chapter title):
-[CHAPTER: Introduction]
-... content ...
-[CHAPTER: Next Chapter Name]
-... content ...
-
-End with a motivational closing line.
-Do not include any stage directions, sound effects, or formatting — plain narration text only.`;
-
-  try {
-    const fullScriptText = await callGemini(prompt);
-
-    // Parse the script into chapters
-    // By using a regex with a capture group, split() returns the text interleaved with the captured titles.
-    const parts = fullScriptText.split(/\[CHAPTER:\s*(.+?)\]/g);
-    const chapters: AudioChapter[] = [];
-
-    // parts[0] is the text before the first chapter (often empty if it starts right away)
-    // parts[1] is the first chapter title, parts[2] is its content, etc.
-    for (let i = 1; i < parts.length; i += 2) {
-      const title = parts[i].trim();
-      // const content = parts[i + 1] ? parts[i + 1].trim() : ''; 
-      
-      chapters.push({
-        title,
-        timestamp: 0 // Frontend Web Speech API will read aloud; real timestamps can be calculated later
-      });
-    }
-
-    // Fallback if the AI failed to generate any [CHAPTER:] markers
-    if (chapters.length === 0) {
-      chapters.push({
-        title: 'Introduction',
-        timestamp: 0
-      });
-    }
-
-    return {
-      title: `Audio Lesson: ${textContent.title}`,
-      script: fullScriptText,
-      chapters
-    };
-  } catch (error: any) {
-    throw new Error(`Failed to generate audio script: ${error.message}`);
+  if (objectives && Array.isArray(objectives.items) && objectives.items.length > 0) {
+    script += '[CHAPTER: Introduction]\n';
+    script += 'By the end of this lesson, you will be able to: ';
+    script += objectives!.items!.join('; ') + '.\n\n';
   }
+
+  proseBlocks.forEach((section: any, i: number) => {
+    script += '[CHAPTER: ' + (section.heading || ('Part ' + (i + 1))) + ']\n';
+    if (section.body) {
+      script += section.body.replace(/\*\*(.+?)\*\*/g, '$1') + '\n\n';
+    }
+  });
+
+  script += '[CHAPTER: Summary]\n';
+  script += 'Great work making it through ' + textContent.title + '. ';
+  script += 'Review the key concepts from each section as you continue learning.\n';
+
+  return parseScriptToAudio('Audio Lesson: ' + textContent.title, script);
+}
+
+export function buildAudioFromMasterContext(masterCtx: MasterContext): AudioContent {
+  let script = 'Welcome to this audio lesson on ' + masterCtx.topic + '.\n\n';
+  script += '[CHAPTER: Overview]\n';
+  script += masterCtx.oneLiner + '\n\n';
+
+  script += '[CHAPTER: Key Concepts]\n';
+  masterCtx.coreConcepts.forEach(c => {
+    script += c.term + '. ' + c.definition + '\n';
+  });
+  script += '\n';
+
+  script += '[CHAPTER: Key Facts]\n';
+  masterCtx.keyFacts.forEach(f => {
+    script += f + '\n';
+  });
+  script += '\n';
+
+  masterCtx.toc.forEach((title, i) => {
+    script += '[CHAPTER: ' + title + ']\n';
+    // Placeholder — will be filled when textContent arrives
+    script += 'This section covers ' + title + ' in depth.\n\n';
+  });
+
+  script += '[CHAPTER: Summary]\n';
+  script += 'That covers the essential concepts of ' + masterCtx.topic + '. Keep reviewing and you\'ll master it!\n';
+
+  return parseScriptToAudio('Audio Lesson: ' + masterCtx.topic, script);
+}
+
+function parseScriptToAudio(title: string, script: string): AudioContent {
+  const parts = script.split(/\[CHAPTER:\s*(.+?)\]/g);
+  const chapters: AudioChapter[] = [];
+
+  for (let i = 1; i < parts.length; i += 2) {
+    chapters.push({ title: parts[i].trim(), timestamp: 0 });
+  }
+
+  if (chapters.length === 0) {
+    chapters.push({ title: 'Introduction', timestamp: 0 });
+  }
+
+  return { title, script, chapters };
 }

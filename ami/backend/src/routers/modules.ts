@@ -6,7 +6,7 @@ import { requireAuth } from '../middleware/auth';
 import { runPhase1, runPhase2 } from '../agents/orchestrator';
 import { supabase } from '../services/supabase';
 import { callGeminiVision } from '../services/gemini';
-import { Module, Persona, SourceContent } from '../types';
+import { Module, Persona, SourceContent, MasterContext } from '../types';
 
 export const modulesRouter = Router();
 modulesRouter.use(requireAuth);
@@ -44,10 +44,27 @@ async function enrichPersona(userId: string, persona: Persona): Promise<Persona>
   }
 }
 
-async function runBackgroundPhase2(moduleId: string, source: SourceContent, textContent: any, persona: Persona) {
+/**
+ * Background Phase 2 — runs after Phase 1 returns to frontend.
+ * Generates text, slides, mindmap, and audio from the MasterContext,
+ * then writes all of them to Supabase in one update.
+ */
+async function runBackgroundPhase2(
+  moduleId: string,
+  source: SourceContent,
+  masterContext: MasterContext,
+  persona: Persona
+) {
   try {
-    const { slides, mindmap, audio } = await runPhase2(source, textContent, persona);
-    await supabase.from('modules').update({ slides, mindmap, audio, status: 'complete' }).eq('id', moduleId);
+    console.log('[Modules] Background Phase 2 starting for ' + moduleId);
+    const { textContent, slides, mindmap, audio } = await runPhase2(source, masterContext, persona);
+    await supabase.from('modules').update({
+      text_content: textContent,
+      slides,
+      mindmap,
+      audio,
+      status: 'complete',
+    }).eq('id', moduleId);
     console.log('[Modules] Phase 2 complete for ' + moduleId);
   } catch (err: any) {
     console.error('[Modules] Phase 2 failed for ' + moduleId + ':', err.message);
@@ -55,35 +72,72 @@ async function runBackgroundPhase2(moduleId: string, source: SourceContent, text
   }
 }
 
+// POST /api/modules/generate — search topic, run Lead Agent, save module, kick off Phase 2
 modulesRouter.post('/generate', async (req, res) => {
   try {
     const { topic, persona } = req.body;
     if (!topic || !persona) return res.status(400).json({ error: 'Topic and persona are required' });
+
     const enrichedPersona = await enrichPersona(req.user!.id, persona);
-    const { source, textContent } = await runPhase1(topic, enrichedPersona);
+
+    // Phase 1: search + Lead Agent → MasterContext (~15-20s)
+    const { source, masterContext } = await runPhase1(topic, enrichedPersona);
+
     const moduleId = uuidv4();
+
+    // Save immediately with 'generating' status so frontend can render instantly.
+    // textContent/slides/mindmap/audio will be filled in by background Phase 2.
     const moduleObj: Module = {
-      id: moduleId, userId: req.user!.id, topic, persona: enrichedPersona,
-      source, textContent, slides: [], mindmap: [],
+      id: moduleId,
+      userId: req.user!.id,
+      topic,
+      persona: enrichedPersona,
+      source,
+      masterContext,
+      textContent: {
+        title: masterContext.topic,
+        subtitle: masterContext.oneLiner,
+        toc: masterContext.toc.map((t, i) => ({ id: 's' + (i + 1), title: t, done: false, current: i === 0 })),
+        sections: [],
+      },
+      slides: [],
+      mindmap: [],
       audio: { title: '', script: '', chapters: [] },
-      progress: 0, fromUpload: false, deadline: null, createdAt: new Date().toISOString()
+      progress: 0,
+      fromUpload: false,
+      deadline: null,
+      createdAt: new Date().toISOString(),
     };
+
     const { error } = await supabase.from('modules').insert({
-      id: moduleObj.id, user_id: moduleObj.userId, topic: moduleObj.topic,
-      persona: moduleObj.persona, source: moduleObj.source,
-      text_content: moduleObj.textContent, slides: moduleObj.slides,
-      mindmap: moduleObj.mindmap, audio: moduleObj.audio,
-      progress: moduleObj.progress, from_upload: moduleObj.fromUpload,
-      deadline: moduleObj.deadline, status: 'generating'
+      id: moduleObj.id,
+      user_id: moduleObj.userId,
+      topic: moduleObj.topic,
+      persona: moduleObj.persona,
+      source: moduleObj.source,
+      master_context: moduleObj.masterContext,
+      text_content: moduleObj.textContent,
+      slides: moduleObj.slides,
+      mindmap: moduleObj.mindmap,
+      audio: moduleObj.audio,
+      progress: moduleObj.progress,
+      from_upload: moduleObj.fromUpload,
+      deadline: moduleObj.deadline,
+      status: 'generating',
     });
     if (error) throw new Error(error.message);
+
+    // Respond to frontend immediately with the skeleton module
     res.json({ ...moduleObj, status: 'generating' });
-    runBackgroundPhase2(moduleId, source, textContent, enrichedPersona);
+
+    // Fire Phase 2 in background (text + slides + mindmap + audio)
+    runBackgroundPhase2(moduleId, source, masterContext, enrichedPersona);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// POST /api/modules/upload — PDF/image upload, same Hub and Spoke flow
 modulesRouter.post('/upload', async (req, res) => {
   try {
     if (!req.files || !req.files.files) return res.status(400).json({ error: 'No files uploaded' });
@@ -91,40 +145,81 @@ modulesRouter.post('/upload', async (req, res) => {
     const files: fileUpload.UploadedFile[] = Array.isArray(rawFiles) ? rawFiles : [rawFiles];
     const persona: Persona = JSON.parse(req.body.persona || '{}');
     const deadline = req.body.deadline || null;
+
     let combinedText = '';
     for (const file of files) {
       if (file.mimetype === 'application/pdf') {
         const data = await pdfParse(file.data);
         combinedText += data.text + '\n\n';
       } else if (file.mimetype.startsWith('image/')) {
-        const text = await callGeminiVision('Extract all readable text from this image. Return plain text only.', file.data, file.mimetype);
+        const text = await callGeminiVision(
+          'Extract all readable text from this image. Return plain text only.',
+          file.data,
+          file.mimetype
+        );
         combinedText += text + '\n\n';
       }
     }
+
     if (!combinedText.trim()) return res.status(400).json({ error: 'No extractable text found in files.' });
     combinedText = combinedText.substring(0, 8000);
+
     const topic = files[0].name.replace(/\.[^.]+$/, '');
-    const source: SourceContent = { topic, sourceTitle: 'Uploaded material', sourceExcerpt: combinedText, sourceUrl: null };
+    const source: SourceContent = {
+      topic,
+      sourceTitle: 'Uploaded material',
+      sourceExcerpt: combinedText,
+      sourceUrl: null,
+    };
+
     const enrichedPersona = await enrichPersona(req.user!.id, persona);
-    const { textContent } = await runPhase1(topic, enrichedPersona, true, source);
+
+    // Phase 1: Lead Agent compresses the uploaded text → MasterContext
+    const { source: _, masterContext } = await runPhase1(topic, enrichedPersona, true, source);
+
     const moduleId = uuidv4();
     const moduleObj: Module = {
-      id: moduleId, userId: req.user!.id, topic, persona: enrichedPersona,
-      source, textContent, slides: [], mindmap: [],
+      id: moduleId,
+      userId: req.user!.id,
+      topic,
+      persona: enrichedPersona,
+      source,
+      masterContext,
+      textContent: {
+        title: masterContext.topic,
+        subtitle: masterContext.oneLiner,
+        toc: masterContext.toc.map((t, i) => ({ id: 's' + (i + 1), title: t, done: false, current: i === 0 })),
+        sections: [],
+      },
+      slides: [],
+      mindmap: [],
       audio: { title: '', script: '', chapters: [] },
-      progress: 0, fromUpload: true, deadline, createdAt: new Date().toISOString()
+      progress: 0,
+      fromUpload: true,
+      deadline,
+      createdAt: new Date().toISOString(),
     };
+
     const { error } = await supabase.from('modules').insert({
-      id: moduleObj.id, user_id: moduleObj.userId, topic: moduleObj.topic,
-      persona: moduleObj.persona, source: moduleObj.source,
-      text_content: moduleObj.textContent, slides: moduleObj.slides,
-      mindmap: moduleObj.mindmap, audio: moduleObj.audio,
-      progress: moduleObj.progress, from_upload: moduleObj.fromUpload,
-      deadline: moduleObj.deadline, status: 'generating'
+      id: moduleObj.id,
+      user_id: moduleObj.userId,
+      topic: moduleObj.topic,
+      persona: moduleObj.persona,
+      source: moduleObj.source,
+      master_context: moduleObj.masterContext,
+      text_content: moduleObj.textContent,
+      slides: moduleObj.slides,
+      mindmap: moduleObj.mindmap,
+      audio: moduleObj.audio,
+      progress: moduleObj.progress,
+      from_upload: moduleObj.fromUpload,
+      deadline: moduleObj.deadline,
+      status: 'generating',
     });
     if (error) throw new Error(error.message);
+
     res.json({ ...moduleObj, status: 'generating' });
-    runBackgroundPhase2(moduleId, source, textContent, enrichedPersona);
+    runBackgroundPhase2(moduleId, source, masterContext, enrichedPersona);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -138,7 +233,11 @@ modulesRouter.get('/', async (req, res) => {
       .eq('user_id', req.user!.id)
       .order('created_at', { ascending: false });
     if (error) throw new Error(error.message);
-    res.json(data.map((mod: any) => ({ ...mod, fromUpload: mod.from_upload, createdAt: mod.created_at })));
+    res.json(data.map((mod: any) => ({
+      ...mod,
+      fromUpload: mod.from_upload,
+      createdAt: mod.created_at,
+    })));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -148,9 +247,18 @@ modulesRouter.get('/:id', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('modules').select('*')
-      .eq('id', req.params.id).eq('user_id', req.user!.id).single();
+      .eq('id', req.params.id)
+      .eq('user_id', req.user!.id)
+      .single();
     if (error || !data) return res.status(404).json({ error: 'Module not found' });
-    res.json({ ...data, userId: data.user_id, textContent: data.text_content, fromUpload: data.from_upload, createdAt: data.created_at });
+    res.json({
+      ...data,
+      userId: data.user_id,
+      masterContext: data.master_context,
+      textContent: data.text_content,
+      fromUpload: data.from_upload,
+      createdAt: data.created_at,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -159,10 +267,12 @@ modulesRouter.get('/:id', async (req, res) => {
 modulesRouter.get('/:id/status', async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('modules').select('id, status, slides, mindmap, audio')
-      .eq('id', req.params.id).eq('user_id', req.user!.id).single();
+      .from('modules').select('id, status, slides, mindmap, audio, text_content')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user!.id)
+      .single();
     if (error || !data) return res.status(404).json({ error: 'Module not found' });
-    res.json(data);
+    res.json({ ...data, textContent: data.text_content });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -175,7 +285,9 @@ modulesRouter.put('/:id/progress', async (req, res) => {
       return res.status(400).json({ error: 'Progress must be a number between 0 and 1' });
     }
     const { error } = await supabase.from('modules')
-      .update({ progress }).eq('id', req.params.id).eq('user_id', req.user!.id);
+      .update({ progress })
+      .eq('id', req.params.id)
+      .eq('user_id', req.user!.id);
     if (error) throw new Error(error.message);
     res.json({ success: true });
   } catch (error: any) {
@@ -186,7 +298,9 @@ modulesRouter.put('/:id/progress', async (req, res) => {
 modulesRouter.delete('/:id', async (req, res) => {
   try {
     const { error } = await supabase.from('modules')
-      .delete().eq('id', req.params.id).eq('user_id', req.user!.id);
+      .delete()
+      .eq('id', req.params.id)
+      .eq('user_id', req.user!.id);
     if (error) throw new Error(error.message);
     res.json({ success: true });
   } catch (error: any) {

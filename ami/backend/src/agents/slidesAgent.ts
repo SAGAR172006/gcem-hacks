@@ -1,50 +1,83 @@
-import { SourceContent, TextContent, Persona, Slide } from '../types';
-import { callGeminiJSON } from '../services/gemini';
+import { MasterContext, Persona, Slide } from '../types';
+import { callGeminiSlidesJSON } from '../services/gemini';
 import { imageAgent } from './imageAgent';
+import { serializeMasterContext } from './leadAgent';
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+/**
+ * Slides Agent — Hub and Spoke, Phase 2 Worker.
+ *
+ * Receives lightweight MasterContext. One Gemini call → 6 slides with narration.
+ * Unsplash images fetched sequentially using imageKeywords from MasterContext.
+ */
 export async function generateSlides(
-  source: SourceContent,
-  textContent: TextContent,
+  masterCtx: MasterContext,
   persona: Persona
 ): Promise<Slide[]> {
+  const contextBlock = serializeMasterContext(masterCtx);
+
   const prompt = [
-    'You are a presentation agent for an educational app called AMI.',
-    'Summarize the following topic into exactly 6 slides.',
-    'Topic: ' + source.topic,
+    'You are a presentation agent for AMI, an educational app.',
     'Student level: ' + persona.grade,
     '',
-    'Content to base slides on:',
-    textContent.toc.map((t: any, i: number) => (i + 1) + '. ' + t.title).join('\n'),
+    '=== MASTER CONTEXT ===',
+    contextBlock,
+    '=== END MASTER CONTEXT ===',
     '',
-    'Output STRICTLY as a raw JSON array — no markdown, no code blocks, no explanation.',
-    'Each slide object must have:',
-    '  "slideNumber": integer 1 through 6',
-    '  "kind": one of "cover" | "bullet" | "stat" | "split"',
-    '  "title": string',
-    '  "narration": string (1-2 sentence spoken narration)',
-    '  "imageSearchKeyword": one specific concrete word for Unsplash image search',
+    'Create exactly 6 slides for a presentation on: ' + masterCtx.topic,
+    'Base ALL content strictly on the Master Context above.',
     '',
-    'Additional fields by kind:',
-    '  cover: add "subtitle": string',
-    '  bullet: add "points": array of exactly 4 short strings',
-    '  stat: add "stat": striking number or percentage string, "caption": string',
-    '  split: add "cards": [{label: string, title: string, body: string}, {label: string, title: string, body: string}]',
+    'Output STRICTLY as a raw JSON array — no markdown, no code blocks:',
+    '[',
+    '  {',
+    '    "slideNumber": 1,',
+    '    "kind": "cover",',
+    '    "title": "Topic title",',
+    '    "subtitle": "One sentence subtitle",',
+    '    "narration": "Welcome narration (1-2 sentences, podcast tone)",',
+    '    "imageSearchKeyword": "specific noun for Unsplash"',
+    '  },',
+    '  {',
+    '    "slideNumber": 2,',
+    '    "kind": "bullet",',
+    '    "title": "Slide title",',
+    '    "points": ["Point 1", "Point 2", "Point 3", "Point 4"],',
+    '    "narration": "Narration (1-2 sentences)",',
+    '    "imageSearchKeyword": "specific noun"',
+    '  },',
+    '  // ... slides 3-6 using kinds: stat, split, bullet, bullet',
+    ']',
     '',
-    'Rules: slide 1 MUST be kind "cover". No two consecutive slides the same kind. Return raw JSON array only.',
+    'Slide kinds available:',
+    '  "cover"  — needs subtitle (slide 1 MUST be cover)',
+    '  "bullet" — needs points: array of exactly 4 short strings',
+    '  "stat"   — needs stat: a striking number/%, and caption: string',
+    '  "split"  — needs cards: [{label, title, body}, {label, title, body}]',
+    '',
+    'Rules:',
+    '- Slide 1 MUST be kind "cover"',
+    '- No two consecutive slides the same kind',
+    '- Every slide needs narration (friendly podcast voice, 1-2 sentences)',
+    '- imageSearchKeyword: one specific concrete noun (e.g. "microscope" not "biology")',
+    '- Return raw JSON array only. No text outside the array.',
   ].join('\n');
 
   try {
-    const rawSlides = await callGeminiJSON<any[]>(prompt);
+    console.log('[SlidesAgent] Generating slides from Master Context (secondary key pool)...');
+    const rawSlides = await callGeminiSlidesJSON<any[]>(prompt);
 
-    // Small delay before image fetches to avoid burst
-    await sleep(800);
+    await sleep(500);
 
-    // Fetch Unsplash images sequentially with small gaps (avoids hammering rate limits)
+    // Fetch Unsplash images using MasterContext imageKeywords as fallbacks
     const slides: Slide[] = [];
-    for (const slide of rawSlides) {
-      const keyword = slide.imageSearchKeyword || source.topic;
+    for (let i = 0; i < rawSlides.length; i++) {
+      const slide = rawSlides[i];
+      // Use the slide's own keyword, fallback to MasterContext imageKeywords pool
+      const keyword = slide.imageSearchKeyword
+        || masterCtx.imageKeywords[i % masterCtx.imageKeywords.length]
+        || masterCtx.topic;
+
       const imageUrl = slide.kind === 'cover' ? null : await imageAgent(keyword);
       if (slide.kind !== 'cover') await sleep(250);
 
@@ -62,11 +95,10 @@ export async function generateSlides(
       } as Slide);
     }
 
+    console.log('[SlidesAgent] Done — ' + slides.length + ' slides generated');
     return slides;
-  } catch (error: any) {
-    if (error instanceof SyntaxError) {
-      throw new Error('Failed to parse Slides JSON: ' + error.message);
-    }
-    throw new Error('Failed to generate slides: ' + error.message);
+  } catch (err: any) {
+    if (err instanceof SyntaxError) throw new Error('[SlidesAgent] Failed to parse JSON: ' + err.message);
+    throw new Error('[SlidesAgent] Failed to generate slides: ' + err.message);
   }
 }

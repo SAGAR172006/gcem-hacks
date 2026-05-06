@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../services/api.js'
 import { Ico } from '../components/ui/Icons.jsx'
 import { TopBar } from '../components/layout/TopBar.jsx'
-import { SUBJECTS } from '../data/content.js'
+import { SUBJECTS, HISTORY_ITEMS } from '../data/content.js'
 
 function SceneArt({ scene }) {
   if (scene === 'leaf') return (
@@ -77,20 +77,37 @@ function SceneArt({ scene }) {
   return <div style={{ width: '100%', height: '100%', background: '#eee' }}/>
 }
 
-function HistoryCard({ item, onClick }) {
+function HistoryCard({ item, onClick, isMock }) {
   const sub = SUBJECTS[item.subject] || { color: '#888', icon: 'Book' }
   const Icon = Ico[sub.icon] || Ico.Book
   const pct = Math.round((item.progress || 0) * 100)
   const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleDateString() : ''
   return (
-    <div onClick={onClick} style={{ background: 'var(--paper)', borderRadius: 'var(--r-lg)', padding: '16px 16px 18px', boxShadow: 'var(--shadow-sm)', border: '1px solid rgba(45,30,15,0.05)', cursor: 'pointer', transition: 'transform 0.4s var(--ease-organic), box-shadow 0.4s ease', display: 'flex', flexDirection: 'column', gap: 10 }}
-      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)' }}
-      onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)' }}>
+    <div
+      onClick={isMock ? undefined : onClick}
+      title={isMock ? 'Generate a module to start learning' : undefined}
+      style={{
+        background: 'var(--paper)',
+        borderRadius: 'var(--r-lg)',
+        padding: '16px 16px 18px',
+        boxShadow: 'var(--shadow-sm)',
+        border: '1px solid rgba(45,30,15,0.05)',
+        cursor: isMock ? 'default' : 'pointer',
+        transition: 'transform 0.4s var(--ease-organic), box-shadow 0.4s ease',
+        display: 'flex', flexDirection: 'column', gap: 10,
+        opacity: isMock ? 0.82 : 1,
+      }}
+      onMouseEnter={e => { if (!isMock) { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = 'var(--shadow-md)' } }}
+      onMouseLeave={e => { if (!isMock) { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'var(--shadow-sm)' } }}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: sub.color }}>
           <Icon style={{ width: 14, height: 14 }}/>{item.subject || 'Module'}
         </span>
-        <span style={{ fontSize: 12, color: 'var(--ink-400)' }}>{dateStr}</span>
+        {isMock
+          ? <span style={{ fontSize: 11, color: 'var(--lav-400)', fontWeight: 500 }}>sample</span>
+          : <span style={{ fontSize: 12, color: 'var(--ink-400)' }}>{dateStr}</span>
+        }
       </div>
       <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--ink-900)', lineHeight: 1.2, letterSpacing: '-0.015em' }}>{item.topic || item.title}</div>
       <div style={{ width: '100%', aspectRatio: '1.7', borderRadius: 14, overflow: 'hidden', background: 'var(--cream-deep)' }}>
@@ -214,15 +231,36 @@ export default function DashboardPage({ persona, onChangePersona, onAccountSetti
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '0 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {isLoggedIn ? (
           <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 8px' }}>
-              <h2 className="h3">Continue learning</h2>
-              <span className="muted" style={{ fontSize: 13 }}>{modules.length} modules</span>
-            </div>
-            <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 18, marginTop: 8 }}>
-              {modules.map(item => (
-                <HistoryCard key={item.id} item={item} onClick={() => onResume(item)}/>
-              ))}
-            </div>
+            {modules.length > 0 ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 8px' }}>
+                  <h2 className="h3">Continue learning</h2>
+                  <span className="muted" style={{ fontSize: 13 }}>{modules.length} module{modules.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 18, marginTop: 8 }}>
+                  {modules.map(item => (
+                    <HistoryCard key={item.id} item={item} onClick={() => onResume(item)}/>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0 8px' }}>
+                  <h2 className="h3">Continue learning</h2>
+                  <span style={{ fontSize: 12, fontWeight: 500, padding: '4px 10px', borderRadius: 999, background: 'var(--lav-50)', border: '1px solid var(--lav-200)', color: 'var(--lav-500)' }}>
+                    ✦ Sample modules
+                  </span>
+                </div>
+                <p className="muted" style={{ fontSize: 14, padding: '0 8px', margin: '0 0 4px' }}>
+                  Your modules will appear here. Generate your first one above — or explore these samples to see what AMI creates.
+                </p>
+                <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 18, marginTop: 4 }}>
+                  {HISTORY_ITEMS.map(item => (
+                    <HistoryCard key={item.id} item={{ ...item, topic: item.title }} onClick={() => {}} isMock/>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         ) : (
           <>

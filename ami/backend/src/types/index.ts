@@ -1,7 +1,7 @@
 export interface Persona {
   grade: string;
   interest: string;
-  adaptiveContext?: string | null; // injected from learning stats before generation
+  adaptiveContext?: string | null;
 }
 
 export interface SourceContent {
@@ -9,6 +9,24 @@ export interface SourceContent {
   sourceTitle: string;
   sourceExcerpt: string;
   sourceUrl: string | null;
+}
+
+// ── Master Context ─────────────────────────────────────────────────────────────
+// Produced by the Lead Agent in one Gemini call from the raw source.
+// Every downstream agent receives THIS — never the full source text again.
+export interface CoreConcept {
+  term: string;
+  definition: string;
+  relatedTerms: string[];
+}
+
+export interface MasterContext {
+  topic: string;
+  oneLiner: string;
+  coreConcepts: CoreConcept[];
+  keyFacts: string[];
+  toc: string[];
+  imageKeywords: string[];
 }
 
 export interface TocItem {
@@ -85,6 +103,7 @@ export interface Module {
   topic: string;
   persona: Persona;
   source: SourceContent;
+  masterContext?: MasterContext;
   textContent: TextContent;
   slides: Slide[];
   mindmap: MindmapNode[];

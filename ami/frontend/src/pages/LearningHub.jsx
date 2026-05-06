@@ -221,10 +221,16 @@ function RoadmapSidebar({ sections, sectionStatus, currentSection }) {
 }
 
 // ── Interactive InlineQuiz that reports result up ─────────────────────────────
-function InlineQuizTracked({ q, onCorrect, onWrong }) {
+function InlineQuizTracked({ q, onCorrect, onWrong, resetKey }) {
   const [pick, setPick] = useState(null)
   const correct = q.choices.find(c => c.correct)
   const [showHint, setShowHint] = useState(false)
+
+  // When parent resets all quizzes, resetKey changes → clear local state
+  useEffect(() => {
+    setPick(null)
+    setShowHint(false)
+  }, [resetKey])
 
   const handlePick = (id) => {
     if (pick != null) return
@@ -260,7 +266,7 @@ function InlineQuizTracked({ q, onCorrect, onWrong }) {
           </button>
         ) : (
           <span style={{ fontSize: 13, fontWeight: 600, color: correct.id === pick ? 'var(--success)' : 'var(--error)' }}>
-            {correct.id === pick ? '✓ That\'s right!' : `Not quite. Correct: ${correct.id.toUpperCase()}.`}
+            {correct.id === pick ? '✓ That\'s right!' : `Not quite. Correct answer: ${correct.id.toUpperCase()}.`}
           </span>
         )}
       </div>
@@ -278,6 +284,10 @@ function ImmersivePillar({ textContent, moduleId }) {
   const [quizResults, setQuizResults] = useState(() => Array(total).fill(null))
   const [currentSection, setCurrentSection] = useState(0)
   const [showToast, setShowToast] = useState(false)
+  // Flag set when a wrong answer is given — shows the reset banner
+  const [hasFailed, setHasFailed] = useState(false)
+  // Bumped on every reset to signal InlineQuizTracked to clear its local state
+  const [quizResetKey, setQuizResetKey] = useState(0)
 
   // Determine section status for roadmap
   const sectionStatus = tocSections.map((_, i) => {
@@ -290,7 +300,7 @@ function ImmersivePillar({ textContent, moduleId }) {
   const isComplete = currentSection >= total
 
   const handleCorrect = () => {
-    // Advance to next section
+    setHasFailed(false)
     const next = currentSection + 1
     setCurrentSection(next)
     setQuizResults(prev => { const r = [...prev]; r[currentSection] = 'correct'; return r })
@@ -300,16 +310,22 @@ function ImmersivePillar({ textContent, moduleId }) {
   }
 
   const handleWrong = () => {
-    // Reset: go back to section 0, clear all results
+    // Just flag the failure — let the user see what went wrong before resetting
+    setQuizResults(prev => { const r = [...prev]; r[currentSection] = 'wrong'; return r })
+    setHasFailed(true)
+  }
+
+  const handleReset = () => {
     setQuizResults(Array(total).fill(null))
     setCurrentSection(0)
+    setHasFailed(false)
+    setQuizResetKey(k => k + 1) // signals every InlineQuizTracked to clear its pick
   }
 
   const renderProse = (body) => body.split('\n\n').map((p, i) => (
     <p key={i} style={{ fontSize: 16, lineHeight: 1.75, color: 'var(--ink-700)', margin: '12px 0' }} dangerouslySetInnerHTML={{ __html: p.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') }}/>
   ))
 
-  // Current section label
   const currentLabel = tocSections[currentSection]?.title || 'Complete'
 
   return (
@@ -327,7 +343,7 @@ function ImmersivePillar({ textContent, moduleId }) {
               <div style={{ fontSize: 56, marginBottom: 16 }}>🏆</div>
               <h2 className="h2" style={{ marginBottom: 8 }}>Section complete!</h2>
               <p className="muted" style={{ fontSize: 16, marginBottom: 24 }}>You've worked through all sections of {c.title}. Explore the other learning formats above.</p>
-              <button className="pill pill-primary" onClick={() => { setCurrentSection(0); setQuizResults(Array(total).fill(null)) }}>
+              <button className="pill pill-primary" onClick={handleReset}>
                 <Ico.ArrowLeft/> Start over
               </button>
             </div>
@@ -361,15 +377,40 @@ function ImmersivePillar({ textContent, moduleId }) {
                     q={s}
                     onCorrect={handleCorrect}
                     onWrong={handleWrong}
+                    resetKey={quizResetKey}
                   />
                 )
                 return null
               })}
-              {/* Hint bar at the bottom */}
-              <div style={{ marginTop: 24, padding: '12px 16px', background: 'var(--peach-50)', borderRadius: 'var(--r-md)', fontSize: 13, color: 'var(--ink-700)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ color: 'var(--peach-500)' }}><Ico.Hint/></span>
-                Answer the quiz correctly to unlock the next section. Wrong answers reset progress.
-              </div>
+
+              {/* ── Wrong-answer reset banner ── */}
+              {hasFailed ? (
+                <div className="fade-in" style={{ marginTop: 24, padding: '18px 20px', background: 'rgba(226,106,92,0.06)', borderRadius: 'var(--r-md)', border: '1.5px solid var(--error)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: 20, lineHeight: 1 }}>😬</span>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--ink-900)' }}>Not quite right.</p>
+                      <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--ink-600)', lineHeight: 1.5 }}>
+                        Re-read the section above, then reset and try all the quizzes again from the beginning.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleReset}
+                    style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 999, background: 'var(--error)', color: 'white', fontSize: 14, fontWeight: 600, cursor: 'pointer', border: 'none', transition: 'opacity 0.2s' }}
+                    onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
+                    onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+                  >
+                    ↺ Reset all quizzes
+                  </button>
+                </div>
+              ) : (
+                /* Normal hint bar */
+                <div style={{ marginTop: 24, padding: '12px 16px', background: 'var(--peach-50)', borderRadius: 'var(--r-md)', fontSize: 13, color: 'var(--ink-700)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: 'var(--peach-500)' }}><Ico.Hint/></span>
+                  Answer the quiz correctly to unlock the next section.
+                </div>
+              )}
             </>
           )}
         </article>
@@ -620,58 +661,245 @@ function AudioPillar({ audioContent }) {
   )
 }
 
-// ── PILLAR 5: Mindmap ─────────────────────────────────────────────────────────
+// ── PILLAR 5: Mindmap (fluid animated redesign) ───────────────────────────────
+const MINDMAP_STYLE = `
+  @keyframes mmNodeIn {
+    0%   { opacity: 0; transform: translate(var(--nx), var(--ny)) scale(0.4); }
+    60%  { transform: translate(var(--nx), var(--ny)) scale(1.08); }
+    100% { opacity: 1; transform: translate(var(--nx), var(--ny)) scale(1); }
+  }
+  @keyframes mmEdgeDraw {
+    from { stroke-dashoffset: var(--edge-len); }
+    to   { stroke-dashoffset: 0; }
+  }
+  @keyframes mmRootPulse {
+    0%, 100% { box-shadow: 0 0 0 0px rgba(255,148,102,0.35), var(--shadow-lg); }
+    50%      { box-shadow: 0 0 0 10px rgba(255,148,102,0), var(--shadow-lg); }
+  }
+  .mm-node { animation: mmNodeIn 0.55s cubic-bezier(0.34,1.56,0.64,1) both; }
+  .mm-root { animation: mmNodeIn 0.45s cubic-bezier(0.34,1.56,0.64,1) both, mmRootPulse 2.4s ease-in-out 0.6s infinite; }
+  .mm-edge { animation: mmEdgeDraw 0.6s ease-out both; }
+  .mm-node:hover { filter: brightness(1.08); transform: translate(var(--nx), var(--ny)) scale(1.08) !important; transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), filter 0.2s; z-index: 10; }
+`
+
+// Palette: one colour per branch from root
+const BRANCH_PALETTE = [
+  { bg: '#FFE4D6', border: '#FF9466', text: '#C45A1E' },
+  { bg: '#E8E4FF', border: '#8C8AD6', text: '#5248A8' },
+  { bg: '#D6F0E2', border: '#5BAE7E', text: '#2E7A52' },
+  { bg: '#FFF0D6', border: '#D4A044', text: '#8A6010' },
+  { bg: '#D6EEFF', border: '#5A9ECC', text: '#1A5E8A' },
+  { bg: '#FFD6F0', border: '#CC5A9E', text: '#8A1A5E' },
+]
+
+function getBranchColor(node, allNodes) {
+  if (!node || node.id === 'root') return { bg: '#FF9466', border: '#FF9466', text: 'white' }
+  // Walk up to find the direct child of root
+  let cur = node
+  while (cur.parent && cur.parent !== 'root') {
+    const parent = allNodes.find(n => n.id === cur.parent)
+    if (!parent) break
+    cur = parent
+  }
+  // Hash the branch id to a palette index
+  const idx = Math.abs(cur.id.split('').reduce((acc, c) => acc * 31 + c.charCodeAt(0), 0)) % BRANCH_PALETTE.length
+  return BRANCH_PALETTE[idx]
+}
+
+function getPathLength(x1, y1, x2, y2) {
+  // approximate cubic bezier length
+  const cx = x1 + (x2 - x1) * 0.5
+  return Math.sqrt((x2-x1)**2 + (y2-y1)**2) * 1.2
+}
+
 function MindmapPillar({ mindmap }) {
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [collapsed, setCollapsed] = useState({})
   const [active, setActive] = useState('root')
+  const [hoveredBranch, setHoveredBranch] = useState(null)
   const dragRef = useRef(null)
-  // Support both flat array (new format) and old {root, nodes} format
-  const allNodes = Array.isArray(mindmap) ? mindmap
-    : mindmap ? [mindmap.root, ...(mindmap.nodes || [])]
-    : [PHOTO_CONTENT.mindmap.root, ...PHOTO_CONTENT.mindmap.nodes]
-  const visible = allNodes.filter(n => {
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => setMounted(true), 60)
+    return () => clearTimeout(t)
+  }, [])
+
+  // Support both flat array (new) and old {root, nodes} format
+  const allNodes = useMemo(() => {
+    if (Array.isArray(mindmap)) return mindmap
+    if (mindmap) return [mindmap.root, ...(mindmap.nodes || [])]
+    return [PHOTO_CONTENT.mindmap.root, ...PHOTO_CONTENT.mindmap.nodes]
+  }, [mindmap])
+
+  const visible = useMemo(() => allNodes.filter(n => {
     let p = n.parent
-    while (p) { if (collapsed[p]) return false; const pn = allNodes.find(x => x.id === p); p = pn?.parent }
+    while (p) {
+      if (collapsed[p]) return false
+      const pn = allNodes.find(x => x.id === p)
+      p = pn?.parent
+    }
     return true
-  })
+  }), [allNodes, collapsed])
+
+  // Find which root-branch a node belongs to
+  const getBranch = useCallback((nodeId) => {
+    let cur = allNodes.find(n => n.id === nodeId)
+    while (cur && cur.parent && cur.parent !== 'root') {
+      cur = allNodes.find(n => n.id === cur.parent)
+    }
+    return cur?.id
+  }, [allNodes])
+
+  const isInHoveredBranch = (nodeId) => {
+    if (!hoveredBranch) return false
+    let cur = allNodes.find(n => n.id === nodeId)
+    while (cur) {
+      if (cur.id === hoveredBranch) return true
+      if (!cur.parent) break
+      cur = allNodes.find(n => n.id === cur.parent)
+    }
+    return false
+  }
+
   const onMouseDown = (e) => { dragRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y } }
-  const onMouseMove = (e) => { if (!dragRef.current) return; setPan({ x: dragRef.current.panX + (e.clientX - dragRef.current.x), y: dragRef.current.panY + (e.clientY - dragRef.current.y) }) }
+  const onMouseMove = (e) => {
+    if (!dragRef.current) return
+    setPan({ x: dragRef.current.panX + (e.clientX - dragRef.current.x), y: dragRef.current.panY + (e.clientY - dragRef.current.y) })
+  }
   const onMouseUp = () => { dragRef.current = null }
   const hasChildren = (id) => allNodes.some(n => n.parent === id)
+
+  // Assign stagger delay per node based on depth
+  const nodeDepth = useCallback((nodeId) => {
+    let depth = 0; let cur = allNodes.find(n => n.id === nodeId)
+    while (cur?.parent) { depth++; cur = allNodes.find(n => n.id === cur.parent) }
+    return depth
+  }, [allNodes])
+
   return (
-    <div style={{ height: 640, position: 'relative', overflow: 'hidden', cursor: 'grab', userSelect: 'none' }} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
-      <div style={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle, var(--ink-100) 1px, transparent 1px)', backgroundSize: '24px 24px', opacity: 0.5, pointerEvents: 'none' }}/>
-      <div style={{ position: 'absolute', left: 0, top: 0, transform: `translate(calc(50% + ${pan.x}px), calc(50% + ${pan.y}px)) scale(${zoom})`, transformOrigin: '0 0', transition: 'transform 0.1s ease' }}>
-        <svg style={{ position: 'absolute', left: -600, top: -400, pointerEvents: 'none' }} width="1200" height="800" viewBox="-600 -400 1200 800">
-          {visible.filter(n => n.parent).map(n => {
-            const parent = allNodes.find(p => p.id === n.parent)
-            if (!parent || !visible.includes(parent)) return null
-            const dx = n.x - parent.x; const cx = parent.x + dx * 0.5
-            return <path key={n.id} d={`M ${parent.x} ${parent.y} C ${cx} ${parent.y}, ${cx} ${n.y}, ${n.x} ${n.y}`} stroke="var(--lav-300)" strokeWidth="1.5" fill="none" opacity="0.7"/>
+    <>
+      <style>{MINDMAP_STYLE}</style>
+      <div
+        style={{ height: 660, position: 'relative', overflow: 'hidden', cursor: dragRef.current ? 'grabbing' : 'grab', userSelect: 'none', background: 'var(--cream)' }}
+        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+      >
+        {/* Dot-grid background */}
+        <div style={{ position: 'absolute', inset: 0, backgroundImage: 'radial-gradient(circle, var(--ink-150, #ddd) 1px, transparent 1px)', backgroundSize: '28px 28px', opacity: 0.45, pointerEvents: 'none' }}/>
+
+        {/* Canvas */}
+        <div style={{ position: 'absolute', left: 0, top: 0, transform: `translate(calc(50% + ${pan.x}px), calc(50% + ${pan.y}px)) scale(${zoom})`, transformOrigin: '0 0' }}>
+
+          {/* SVG edges */}
+          <svg style={{ position: 'absolute', left: -700, top: -500, pointerEvents: 'none', overflow: 'visible' }} width="1400" height="1000" viewBox="-700 -500 1400 1000">
+            {mounted && visible.filter(n => n.parent).map((n, i) => {
+              const parent = allNodes.find(p => p.id === n.parent)
+              if (!parent || !visible.includes(parent)) return null
+              const dx = n.x - parent.x
+              const cx = parent.x + dx * 0.5
+              const isActive = active === n.id || active === n.parent
+              const isHovered = isInHoveredBranch(n.id)
+              const col = getBranchColor(n, allNodes)
+              const pathLen = getPathLength(parent.x, parent.y, n.x, n.y)
+              const depth = nodeDepth(n.id)
+              const delay = (depth * 0.12 + i * 0.03).toFixed(2)
+              return (
+                <path
+                  key={n.id}
+                  className="mm-edge"
+                  d={`M ${parent.x} ${parent.y} C ${cx} ${parent.y}, ${cx} ${n.y}, ${n.x} ${n.y}`}
+                  stroke={isActive || isHovered ? col.border : 'var(--ink-150, #ddd)'}
+                  strokeWidth={isActive ? 2.5 : isHovered ? 2 : 1.5}
+                  fill="none"
+                  opacity={isActive || isHovered ? 1 : 0.55}
+                  style={{
+                    '--edge-len': pathLen,
+                    strokeDasharray: pathLen,
+                    animationDelay: delay + 's',
+                    transition: 'stroke 0.3s, stroke-width 0.3s, opacity 0.3s',
+                  }}
+                />
+              )
+            })}
+          </svg>
+
+          {/* Nodes */}
+          {mounted && visible.map((n, i) => {
+            const isRoot = n.id === 'root'
+            const col = getBranchColor(n, allNodes)
+            const isActive = active === n.id
+            const isHovered = isInHoveredBranch(n.id)
+            const depth = nodeDepth(n.id)
+            const delay = (depth * 0.12 + i * 0.03).toFixed(2)
+            const branch = getBranch(n.id)
+            return (
+              <div
+                key={n.id}
+                className={isRoot ? 'mm-root' : 'mm-node'}
+                onClick={(e) => { e.stopPropagation(); setActive(n.id) }}
+                onMouseEnter={() => !isRoot && setHoveredBranch(branch)}
+                onMouseLeave={() => setHoveredBranch(null)}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  '--nx': n.x + 'px',
+                  '--ny': n.y + 'px',
+                  transform: `translate(${n.x}px, ${n.y}px)`,
+                  padding: isRoot ? '14px 26px' : depth >= 2 ? '6px 12px' : '9px 17px',
+                  background: isRoot
+                    ? 'linear-gradient(135deg, var(--peach-300), var(--peach-400))'
+                    : isActive ? col.border : col.bg,
+                  border: isRoot ? 'none' : `2px solid ${col.border}`,
+                  borderRadius: 999,
+                  fontSize: isRoot ? 15 : depth >= 2 ? 11.5 : 13,
+                  fontWeight: isRoot ? 800 : 600,
+                  color: isRoot ? 'white' : isActive ? 'white' : col.text,
+                  whiteSpace: 'nowrap',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  boxShadow: isActive
+                    ? `0 0 0 4px ${col.border}33, 0 4px 16px ${col.border}44`
+                    : isHovered
+                    ? `0 0 0 2px ${col.border}44, 0 2px 8px ${col.border}22`
+                    : '0 1px 4px rgba(0,0,0,0.08)',
+                  translate: '-50% -50%',
+                  cursor: 'pointer',
+                  zIndex: isRoot ? 5 : isActive ? 4 : 1,
+                  animationDelay: delay + 's',
+                  transition: 'background 0.25s, color 0.25s, box-shadow 0.25s',
+                }}
+              >
+                {isRoot && <span style={{ fontSize: 16, marginRight: 2 }}>🧠</span>}
+                <span>{n.label}</span>
+                {hasChildren(n.id) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setCollapsed(c => ({ ...c, [n.id]: !c[n.id] })) }}
+                    style={{ width: 16, height: 16, borderRadius: '50%', background: isRoot ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.7)', color: isActive ? col.border : col.text, display: 'grid', placeItems: 'center', cursor: 'pointer', fontSize: 10, flexShrink: 0, border: 'none' }}
+                  >
+                    {collapsed[n.id] ? '+' : '−'}
+                  </button>
+                )}
+              </div>
+            )
           })}
-        </svg>
-        {visible.map(n => (
-          <div key={n.id} onClick={(e) => { e.stopPropagation(); setActive(n.id) }} style={{ position: 'absolute', left: 0, top: 0, marginLeft: -60, marginTop: -16, padding: n.id === 'root' ? '12px 22px' : '8px 14px', background: n.id === 'root' ? (active === n.id ? 'var(--peach-300)' : 'var(--peach-200)') : (active === n.id ? 'var(--lav-200)' : 'var(--lav-100)'), border: `1.5px solid ${n.id === 'root' ? (active === n.id ? 'var(--peach-500)' : 'var(--peach-400)') : (active === n.id ? 'var(--lav-400)' : 'var(--lav-200)')}`, borderRadius: 999, fontSize: n.id === 'root' ? 14 : 12.5, fontWeight: n.id === 'root' ? 700 : 600, color: n.id === 'root' ? 'var(--ink-900)' : 'var(--lav-500)', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 8, boxShadow: active === n.id ? '0 0 0 4px rgba(140,138,214,0.2), var(--shadow-md)' : 'var(--shadow-sm)', transform: `translate(${n.x}px, ${n.y}px)`, cursor: 'pointer', transition: 'all 0.3s var(--ease-organic)' }}>
-            <span>{n.label}</span>
-            {hasChildren(n.id) && (
-              <button onClick={(e) => { e.stopPropagation(); setCollapsed(c => ({ ...c, [n.id]: !c[n.id] })) }} style={{ width: 18, height: 18, borderRadius: '50%', background: 'var(--paper)', color: 'var(--lav-500)', display: 'grid', placeItems: 'center', cursor: 'pointer' }}>
-                {collapsed[n.id] ? <Ico.Plus/> : <Ico.Minus/>}
-              </button>
-            )}
-          </div>
-        ))}
+        </div>
+
+        {/* Zoom controls */}
+        <div style={{ position: 'absolute', left: 20, bottom: 20, display: 'flex', flexDirection: 'column', gap: 6, zIndex: 10 }}>
+          <button className="icon-btn" onClick={() => setZoom(z => Math.min(2.5, z + 0.2))} title="Zoom in"><Ico.Plus/></button>
+          <button className="icon-btn" onClick={() => setZoom(z => Math.max(0.3, z - 0.2))} title="Zoom out"><Ico.Minus/></button>
+          <button className="icon-btn" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} title="Reset view"><Ico.Sparkle/></button>
+        </div>
+
+        {/* Legend */}
+        <div style={{ position: 'absolute', right: 20, bottom: 20, fontSize: 12, color: 'var(--ink-400)', padding: '7px 14px', background: 'var(--paper)', borderRadius: 999, boxShadow: 'var(--shadow-sm)', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Ico.Mind style={{ color: 'var(--lav-500)', width: 13, height: 13 }}/> Drag to pan · hover to highlight · click to focus
+        </div>
       </div>
-      <div style={{ position: 'absolute', left: 24, bottom: 24, display: 'flex', flexDirection: 'column', gap: 8, zIndex: 5 }}>
-        <button className="icon-btn" onClick={() => setZoom(z => Math.min(2, z + 0.2))}><Ico.Plus/></button>
-        <button className="icon-btn" onClick={() => setZoom(z => Math.max(0.4, z - 0.2))}><Ico.Minus/></button>
-        <button className="icon-btn" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} title="Reset"><Ico.Sparkle/></button>
-      </div>
-      <div style={{ position: 'absolute', right: 24, bottom: 24, display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--ink-500)', padding: '8px 14px', background: 'var(--paper)', borderRadius: 999, boxShadow: 'var(--shadow-sm)' }}>
-        <Ico.Mind style={{ color: 'var(--lav-500)', width: 14, height: 14 }}/> Drag to pan · click to focus
-      </div>
-    </div>
+    </>
   )
 }
 
@@ -1108,10 +1336,13 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
         const data = await api.getModuleStatus(module.id)
         setModuleStatus(data.status)
         if (data.status === 'complete') {
-          // Merge completed data into liveModule
+          // Merge all Phase 2 data into liveModule (text, slides, mindmap, audio)
           setLiveModule(prev => ({
             ...prev,
             status: 'complete',
+            textContent: (data.textContent && data.textContent.sections?.length > 0)
+              ? data.textContent
+              : prev?.textContent || null,
             slides: data.slides || prev?.slides || [],
             mindmap: data.mindmap || prev?.mindmap || [],
             audio: data.audio || prev?.audio || { title: '', script: '', chapters: [] }
@@ -1126,14 +1357,16 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
     return () => clearInterval(interval)
   }, [module?.id, moduleStatus])
 
-  // Use real module data if available, fall back to mock content
-  const c = (liveModule?.textContent) ? liveModule.textContent : PHOTO_CONTENT
+  // textContent is ready once it has actual sections (Phase 2 filled them in)
+  const hasTextContent = liveModule?.textContent?.sections?.length > 0
+  const c = hasTextContent ? liveModule.textContent : PHOTO_CONTENT
   const moduleId = liveModule?.id || null
   const sourceExcerpt = liveModule?.source?.sourceExcerpt || ''
 
   const isGenerating = moduleStatus === 'generating'
   const hasSlides = liveModule?.slides?.length > 0
   const hasMindmap = liveModule?.mindmap?.length > 0
+  const hasAudio = liveModule?.audio?.chapters?.length > 0
 
   return (
     <div style={{ paddingBottom: 64 }} className="fade-in">
@@ -1155,12 +1388,15 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
         <PillarTabs active={tab} onChange={setTab}/>
         <div key={tab} style={{ animation: 'slide-in-right 0.5s var(--ease-organic)' }}>
           {tab === 'source' && <SourcePillar source={liveModule?.source}/>}
-          {tab === 'text' && <ImmersivePillar textContent={c} moduleId={moduleId}/>}
+          {tab === 'text' && (isGenerating && !hasTextContent
+            ? <GeneratingPlaceholder mediaType="Immersive Text"/>
+            : <ImmersivePillar textContent={c} moduleId={moduleId}/>
+          )}
           {tab === 'slides' && (isGenerating || !hasSlides
             ? <GeneratingPlaceholder mediaType="Slides & Narration"/>
             : <SlidesPillar slides={liveModule.slides}/>
           )}
-          {tab === 'audio' && (isGenerating
+          {tab === 'audio' && (isGenerating || !hasAudio
             ? <GeneratingPlaceholder mediaType="Audio Lesson"/>
             : <AudioPillar audioContent={liveModule?.audio}/>
           )}

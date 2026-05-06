@@ -4,7 +4,7 @@
   "description": "Node.js + Express backend for AMI",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev": "nodemon --watch src --ext ts --exec \"ts-node src/index.ts\"",
     "build": "tsc",
     "start": "node dist/index.js"
   },

@@ -1,140 +1,120 @@
-import { SourceContent, Persona, TextContent } from '../types';
+import { MasterContext, Persona, TextContent } from '../types';
 import { callGeminiJSON } from '../services/gemini';
+import { serializeMasterContext } from './leadAgent';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const CALL_GAP_MS = 1500; // 1.5s between each Gemini call
+/**
+ * Text Agent — Hub and Spoke, Phase 2 Worker.
+ *
+ * Receives the lightweight MasterContext (~400 tokens) from the orchestrator.
+ * Makes ONE Gemini call that expands it into the full immersive text module:
+ * objectives block + 4 prose sections + 4 inline quizzes + title/subtitle.
+ *
+ * Previously: 7 sequential Gemini calls (~3,000 tokens input each = ~21,000 total input tokens)
+ * Now:        1 Gemini call (~600 tokens input = ~600 total input tokens)
+ * Savings:    ~97% reduction in input tokens for this agent.
+ */
+export async function generateImmersiveText(
+  masterCtx: MasterContext,
+  persona: Persona
+): Promise<TextContent> {
+  const contextBlock = serializeMasterContext(masterCtx);
 
-function personaBlock(persona: Persona): string {
-  const base = 'Student level: ' + persona.grade + '\nStudent interest: ' + persona.interest;
-  if (persona.adaptiveContext) {
-    return base + '\nAdaptive context: ' + persona.adaptiveContext;
-  }
-  return base;
-}
-
-
-async function generateTOC(source: SourceContent, persona: Persona): Promise<{ id: string; title: string }[]> {
-  const lines = [
+  const prompt = [
     'You are AMI, a hyper-personalized educational AI.',
+    'Student level: ' + persona.grade,
+    'Student interest: ' + persona.interest,
+    (persona.adaptiveContext ? 'Adaptive context: ' + persona.adaptiveContext : ''),
     '',
-    'Topic: ' + source.topic,
-    ...personaBlock(persona).split('\n'),
+    'You have been given a distilled Master Context for the topic: ' + masterCtx.topic,
     '',
-    'Based on the following source material, generate exactly 4 section titles that cover the topic logically.',
-    'Return a JSON array ONLY - no markdown, no code blocks:',
-    '[',
-    '  { "id": "s1", "title": "..." },',
-    '  { "id": "s2", "title": "..." },',
-    '  { "id": "s3", "title": "..." },',
-    '  { "id": "s4", "title": "..." }',
-    ']',
+    '=== MASTER CONTEXT ===',
+    contextBlock,
+    '=== END MASTER CONTEXT ===',
     '',
-    'Source material (excerpt):',
-    source.sourceExcerpt.slice(0, 3000),
-  ];
-  return await callGeminiJSON<{ id: string; title: string }[]>(lines.join('\n'));
-}
-
-async function generateObjectives(source: SourceContent, persona: Persona): Promise<any> {
-  const lines = [
-    'You are AMI, a hyper-personalized educational AI.',
-    'Topic: ' + source.topic,
-    ...personaBlock(persona).split('\n'),
+    'Using ONLY the Master Context above, generate a complete learning module.',
+    'The 4 sections MUST follow the TOC order listed in the context.',
     '',
-    'Generate a learning objectives block. Return JSON only:',
+    'Output STRICTLY as raw JSON (no markdown, no code blocks):',
     '{',
-    '  "id": "obj1",',
-    '  "kind": "objectives",',
-    '  "heading": "What you\'ll learn",',
-    '  "items": ["outcome 1", "outcome 2", "outcome 3"]',
+    '  "title": "Engaging module title",',
+    '  "subtitle": "One sentence subtitle",',
+    '  "toc": [',
+    '    { "id": "s1", "title": "Section 1 title", "done": false, "current": true },',
+    '    { "id": "s2", "title": "Section 2 title", "done": false, "current": false },',
+    '    { "id": "s3", "title": "Section 3 title", "done": false, "current": false },',
+    '    { "id": "s4", "title": "Section 4 title", "done": false, "current": false }',
+    '  ],',
+    '  "sections": [',
+    '    {',
+    '      "id": "obj",',
+    '      "kind": "objectives",',
+    '      "heading": "What you\'ll learn",',
+    '      "items": ["learning outcome 1", "learning outcome 2", "learning outcome 3"]',
+    '    },',
+    '    {',
+    '      "id": "p1",',
+    '      "kind": "prose",',
+    '      "heading": "Section 1 title",',
+    '      "body": "2-3 paragraphs. Use **bold** for key terms. Use analogies related to: ' + persona.interest + '."',
+    '    },',
+    '    {',
+    '      "id": "q1",',
+    '      "kind": "inline-quiz",',
+    '      "question": "Question about section 1?",',
+    '      "hint": "Helpful hint",',
+    '      "choices": [',
+    '        { "id": "a", "text": "Option A", "correct": false },',
+    '        { "id": "b", "text": "Correct option", "correct": true },',
+    '        { "id": "c", "text": "Option C", "correct": false },',
+    '        { "id": "d", "text": "Option D", "correct": false }',
+    '      ]',
+    '    },',
+    '    // ... repeat prose + quiz pattern for sections 2, 3, 4 (p2/q2, p3/q3, p4/q4)',
+    '  ]',
     '}',
-  ];
-  return await callGeminiJSON<any>(lines.join('\n'));
-}
-
-async function generateSection(
-  source: SourceContent,
-  persona: Persona,
-  sectionTitle: string,
-  sectionIndex: number
-): Promise<{ prose: any; quiz: any }> {
-  const num = sectionIndex + 1;
-  const proseId = 'p' + String(num);
-  const quizId = 'q' + String(num);
-
-  const lines = [
-    'You are AMI, a hyper-personalized educational AI.',
-    'Topic: ' + source.topic,
-    ...personaBlock(persona).split('\n'),
-    'Section ' + String(num) + ' of 4: ' + sectionTitle,
     '',
-    'Source (excerpt):',
-    source.sourceExcerpt.slice(0, 2500),
-    '',
-    'Generate a prose block and inline quiz. Return JSON only:',
-    '{',
-    '  "prose": {',
-    '    "id": "' + proseId + '",',
-    '    "kind": "prose",',
-    '    "heading": "' + sectionTitle + '",',
-    '    "body": "2-3 paragraphs with **bold** key terms. Use analogies about ' + persona.interest + '."',
-    '  },',
-    '  "quiz": {',
-    '    "id": "' + quizId + '",',
-    '    "kind": "inline-quiz",',
-    '    "question": "Question about ' + sectionTitle + '?",',
-    '    "hint": "Helpful hint",',
-    '    "choices": [',
-    '      { "id": "a", "text": "Wrong", "correct": false },',
-    '      { "id": "b", "text": "Correct", "correct": true },',
-    '      { "id": "c", "text": "Wrong", "correct": false },',
-    '      { "id": "d", "text": "Wrong", "correct": false }',
-    '    ]',
-    '  }',
-    '}',
-    'Rules: exactly 4 choices, exactly 1 correct. Write for level: ' + persona.grade,
-  ];
-  return await callGeminiJSON<{ prose: any; quiz: any }>(lines.join('\n'));
-}
+    'Rules:',
+    '- sections array: [objectives, p1, q1, p2, q2, p3, q3, p4, q4] — exactly 9 items',
+    '- Every quiz: exactly 4 choices, exactly 1 marked correct:true',
+    '- Prose bodies: 2-3 paragraphs, separated by \\n\\n, use **bold** for key terms',
+    '- Section titles in toc must match the heading values in prose sections',
+    '- Write at the ' + persona.grade + ' level. Be engaging, not textbook-dry.',
+    '- Base ALL content on the Master Context. Do not invent facts outside it.',
+    '- Return raw JSON only. No text before or after the JSON object.',
+  ].filter(Boolean).join('\n');
 
-async function generateTitleSubtitle(topic: string): Promise<{ title: string; subtitle: string }> {
-  const lines = [
-    'For the educational topic "' + topic + '", write a title and one subtitle sentence.',
-    'Return JSON only: { "title": "...", "subtitle": "..." }',
-  ];
-  return await callGeminiJSON<{ title: string; subtitle: string }>(lines.join('\n'));
-}
-
-export async function generateImmersiveText(source: SourceContent, persona: Persona): Promise<TextContent> {
   try {
-    console.log('[TextAgent] Generating TOC...');
-    const toc = await generateTOC(source, persona);
-    await sleep(CALL_GAP_MS);
+    console.log('[TextAgent] Expanding Master Context into full module (1 Gemini call)...');
+    const result = await callGeminiJSON<TextContent>(prompt);
 
-    const markedTOC = toc.map((s, i) => ({ ...s, done: false, current: i === 0 }));
-
-    console.log('[TextAgent] Generating objectives...');
-    const objectives = await generateObjectives(source, persona);
-    await sleep(CALL_GAP_MS);
-
-    const sections: any[] = [objectives];
-
-    for (let i = 0; i < toc.length; i++) {
-      console.log('[TextAgent] Section ' + String(i + 1) + '/' + String(toc.length) + ': ' + toc[i].title);
-      const { prose, quiz } = await generateSection(source, persona, toc[i].title, i);
-      sections.push(prose, quiz);
-      if (i < toc.length - 1) await sleep(CALL_GAP_MS); // gap between sections, skip after last
+    // Defensive: ensure toc has done/current fields
+    if (Array.isArray(result.toc)) {
+      result.toc = result.toc.map((item: any, i: number) => ({
+        id: item.id || ('s' + (i + 1)),
+        title: item.title || masterCtx.toc[i] || ('Section ' + (i + 1)),
+        done: false,
+        current: i === 0,
+      }));
+    } else {
+      result.toc = masterCtx.toc.map((title, i) => ({
+        id: 's' + (i + 1),
+        title,
+        done: false,
+        current: i === 0,
+      }));
     }
 
-    await sleep(CALL_GAP_MS);
-    console.log('[TextAgent] Generating title/subtitle...');
-    const { title, subtitle } = await generateTitleSubtitle(source.topic);
-
-    return { title, subtitle, toc: markedTOC, sections };
-  } catch (error: any) {
-    if (error instanceof SyntaxError) {
-      throw new Error('Failed to parse Immersive Text JSON: ' + error.message);
+    // Defensive: ensure sections is an array
+    if (!Array.isArray(result.sections)) {
+      throw new Error('sections missing from Gemini response');
     }
-    throw new Error('Failed to generate immersive text: ' + error.message);
+
+    console.log('[TextAgent] Done — ' + result.sections.length + ' sections generated');
+    return result;
+  } catch (err: any) {
+    if (err instanceof SyntaxError) {
+      throw new Error('[TextAgent] Failed to parse JSON response: ' + err.message);
+    }
+    throw new Error('[TextAgent] Failed to generate immersive text: ' + err.message);
   }
 }

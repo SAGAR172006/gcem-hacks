@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase';
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config';
+import { getChatKeyIndex } from '../services/gemini';
 
 export const chatRouter = Router();
 
@@ -49,9 +50,10 @@ chatRouter.post('/embed/:moduleId', async (req, res) => {
       }
     }
 
-    // 3. Generate embeddings
+    // 3. Generate embeddings — use dedicated chat key
+    const chatKeyIdx = getChatKeyIndex();
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: config.geminiKeys[0],
+      apiKey: config.geminiKeys[chatKeyIdx],
       modelName: 'embedding-001'
     });
 
@@ -96,9 +98,10 @@ chatRouter.post('/', async (req, res) => {
 
     if (error || !moduleData) return res.status(404).json({ error: 'Module not found' });
 
-    // 2. Generate embedding for the user's message
+    // 2. Generate embedding for the user's message — use dedicated chat key
+    const chatKeyIdx = getChatKeyIndex();
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: config.geminiKeys[0],
+      apiKey: config.geminiKeys[chatKeyIdx],
       modelName: 'embedding-001'
     });
     const messageEmbedding = await embeddings.embedQuery(message);
@@ -117,36 +120,34 @@ chatRouter.post('/', async (req, res) => {
     const contextText = retrievedChunks.map((c: any) => c.chunk_text).join('\n\n');
 
     // 5. Build the system prompt
-    const systemPrompt = `You are AMI, a focused AI tutor. Your ONLY job is to help the student understand: ${moduleData.topic}
+    const topic = moduleData.topic || 'this topic';
+    const systemPrompt = `You are AMI, a focused AI tutor. Your ONLY job is to help the student understand: ${topic}
 
 Here is the relevant content from the student's study material:
 ${contextText}
 
 Rules:
-- Only answer questions directly related to ${moduleData.topic}
-- If the student asks about something unrelated, politely say you can only discuss ${moduleData.topic} in this session
-- Keep answers friendly and appropriate for: ${moduleData.persona.grade}
-- Use analogies related to: ${moduleData.persona.interest} when helpful
+- Only answer questions directly related to ${topic}
+- If the student asks about something unrelated, politely say you can only discuss ${topic} in this session
+- Keep answers friendly and appropriate for: ${moduleData.persona?.grade || 'a general student'}
+- Use analogies related to: ${moduleData.persona?.interest || 'everyday life'} when helpful
 - Be concise — 2-4 sentences unless a longer answer is clearly needed`;
 
     // 6. Build conversation turns from history (last 10 messages max)
     const recentHistory = (history || []).slice(-10);
     const conversationHistory = recentHistory.map((msg: any) => ({
-      role: msg.role === 'bot' ? 'model' : 'user', // Maps your 'bot' literal to the expected 'model' role
+      role: msg.role === 'bot' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
 
-    // 7. Call Gemini with multi-turn chat
-    const genAI = new GoogleGenerativeAI(config.geminiKeys[0]);
+    // 7. Call Gemini with dedicated chat key
+    const genAI = new GoogleGenerativeAI(config.geminiKeys[chatKeyIdx]);
     const geminiModel = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       systemInstruction: systemPrompt
     });
 
-    const chat = geminiModel.startChat({
-      history: conversationHistory
-    });
-
+    const chat = geminiModel.startChat({ history: conversationHistory });
     const result = await chat.sendMessage(message);
     const replyText = result.response.text();
 
@@ -157,6 +158,7 @@ Rules:
     // 9. Return
     res.json({ reply: replyText, isOffTopic });
   } catch (err: any) {
+    console.error('[Chat] Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
