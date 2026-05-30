@@ -98,6 +98,65 @@ chatRouter.post('/', async (req, res) => {
 
     if (error || !moduleData) return res.status(404).json({ error: 'Module not found' });
 
+    // 1.5. Self-Healing: Check if embeddings exist for this module, if not, generate them immediately!
+    try {
+      const { count, error: countError } = await supabase
+        .from('embeddings')
+        .select('*', { count: 'exact', head: true })
+        .eq('module_id', moduleId);
+
+      if (!countError && (count === null || count === 0)) {
+        console.log(`[ChatRouter] No embeddings found for module ${moduleId}. Triggering automatic self-healing embedding generation...`);
+        const chunks: { text: string; source: string }[] = [];
+        const textContent = moduleData.text_content;
+        const slides = moduleData.slides;
+
+        if (textContent && textContent.sections) {
+          for (const section of textContent.sections) {
+            if (section.kind === 'prose' && section.body) {
+              chunks.push({ text: section.body, source: 'text' });
+            } else if (section.kind === 'inline-quiz') {
+              const quizText = `Question: ${section.question}\nHint: ${section.hint}\nChoices: ${section.choices?.map((c: any) => c.text).join(', ')}`;
+              chunks.push({ text: quizText, source: 'text' });
+            }
+          }
+        }
+
+        if (slides) {
+          for (const slide of slides) {
+            if (slide.narration) {
+              chunks.push({ text: `Slide Narration (${slide.title}): ${slide.narration}`, source: 'slides' });
+            }
+          }
+        }
+
+        if (chunks.length > 0) {
+          const apiKey = await getNextApiKey();
+          const embeddings = new GoogleGenerativeAIEmbeddings({
+            apiKey: apiKey,
+            modelName: 'embedding-001'
+          });
+
+          for (const chunk of chunks) {
+            try {
+              const vector = await embeddings.embedQuery(chunk.text);
+              await supabase.from('embeddings').insert({
+                module_id: moduleId,
+                chunk_text: chunk.text,
+                embedding: vector,
+                metadata: { source: chunk.source }
+              });
+            } catch (embedErr: any) {
+              console.error('[ChatRouter] Failed to generate chunk embedding:', embedErr.message);
+            }
+          }
+          console.log(`[ChatRouter] Completed self-healing embed generation for module ${moduleId}`);
+        }
+      }
+    } catch (e: any) {
+      console.warn('[ChatRouter] Self-healing embed generation check failed:', e.message);
+    }
+
     // 2. Generate embedding for the user's message — use dynamic rotated key
     const apiKey = await getNextApiKey();
     const embeddings = new GoogleGenerativeAIEmbeddings({

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import { api } from '../services/api.js'
 import { Ico } from './ui/Icons.jsx'
 
@@ -13,8 +13,26 @@ export default function MockTestPillar({ moduleId, liveModule, onUpdateMockTest 
   ])
   const [instructions, setInstructions] = useState('')
   const [topicName, setTopicName] = useState(liveModule?.topic || '')
-  const [selectedDifficulty, setSelectedDifficulty] = useState('Medium')
+  
+  // Sync selected difficulty from liveModule or default to Medium
+  const initialDifficulty = useMemo(() => {
+    const rawDiff = liveModule?.mock_test?.activeDifficulty;
+    if (rawDiff) {
+      return rawDiff.charAt(0).toUpperCase() + rawDiff.slice(1);
+    }
+    return 'Medium';
+  }, [liveModule]);
+
+  const [selectedDifficulty, setSelectedDifficulty] = useState(initialDifficulty)
   const [difficultyOpen, setDifficultyOpen] = useState(false)
+  
+  // Keep selectedDifficulty reactive to database updates
+  useEffect(() => {
+    const rawDiff = liveModule?.mock_test?.activeDifficulty;
+    if (rawDiff) {
+      setSelectedDifficulty(rawDiff.charAt(0).toUpperCase() + rawDiff.slice(1));
+    }
+  }, [liveModule]);
   
   // Dynamic UI states
   const [generating, setGenerating] = useState(false)
@@ -26,7 +44,21 @@ export default function MockTestPillar({ moduleId, liveModule, onUpdateMockTest 
   
   const fileInputRef = useRef(null)
 
-  const activeTest = liveModule?.mock_test || null
+  // Map active difficulty to selected test paper (easy, medium, hard)
+  const activeTest = useMemo(() => {
+    const rawTest = liveModule?.mock_test
+    if (!rawTest) return null
+    
+    const diffKey = selectedDifficulty.toLowerCase()
+    if (rawTest[diffKey]) {
+      return {
+        ...rawTest[diffKey],
+        moduleId: liveModule.id,
+        activeDifficulty: rawTest.activeDifficulty || diffKey
+      }
+    }
+    return rawTest
+  }, [liveModule, selectedDifficulty])
 
   // Total marks in distribution
   const totalAllocatedMarks = useMemo(() => {
@@ -109,6 +141,7 @@ export default function MockTestPillar({ moduleId, liveModule, onUpdateMockTest 
       if (moduleId) form.append('moduleId', moduleId)
       form.append('topic', topicName)
       form.append('persona', JSON.stringify(liveModule?.persona || { grade: 'College', interest: 'everyday life' }))
+      form.append('difficulty', selectedDifficulty.toLowerCase())
 
       // Call express endpoint via base fetch to support FormData multipart
       const token = localStorage.getItem('ami_token')
@@ -502,9 +535,32 @@ export default function MockTestPillar({ moduleId, liveModule, onUpdateMockTest 
                 {['Easy', 'Medium', 'Hard'].map((d) => (
                   <button
                     key={d}
-                    onClick={() => {
+                    onClick={async () => {
                       setSelectedDifficulty(d);
                       setDifficultyOpen(false);
+                      if (liveModule?.id) {
+                        try {
+                          const token = localStorage.getItem('ami_token')
+                          const baseUrl = (import.meta.env.VITE_API_URL ?? '') + '/api'
+                          const response = await fetch(`${baseUrl}/mock-test/difficulty`, {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              Authorization: token ? `Bearer ${token}` : ''
+                            },
+                            body: JSON.stringify({ moduleId: liveModule.id, difficulty: d.toLowerCase() })
+                          });
+                          const resData = await response.json();
+                          if (response.ok && resData.activeDifficulty) {
+                            onUpdateMockTest({
+                              ...liveModule.mock_test,
+                              activeDifficulty: resData.activeDifficulty
+                            });
+                          }
+                        } catch (err) {
+                          console.error('Failed to sync difficulty with backend:', err);
+                        }
+                      }
                     }}
                     style={{ padding: '6px 12px', fontSize: 13, border: 'none', background: selectedDifficulty === d ? 'var(--lav-50)' : 'transparent', color: selectedDifficulty === d ? 'var(--lav-600)' : 'var(--ink-700)', textAlign: 'left', borderRadius: 'var(--r-sm)', cursor: 'pointer', fontWeight: 500 }}
                   >
@@ -535,9 +591,20 @@ export default function MockTestPillar({ moduleId, liveModule, onUpdateMockTest 
               <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: 'var(--ink-900)', lineHeight: 1.4 }}>
                 {idx + 1}. {q.question}
               </h3>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--lav-500)', background: 'var(--lav-50)', padding: '4px 10px', borderRadius: 999, whiteSpace: 'nowrap', alignSelf: 'flex-start' }}>
-                {q.marks} Marks
-              </span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--lav-500)', background: 'var(--lav-50)', padding: '4px 10px', borderRadius: 999, whiteSpace: 'nowrap', alignSelf: 'flex-start' }}>
+                  {q.marks} Marks
+                </span>
+                {q.difficultyRating && (
+                  <div style={{ display: 'inline-flex', gap: 2, alignItems: 'center' }} title={`Difficulty: ${q.difficultyRating} / 5 stars`}>
+                    {[...Array(5)].map((_, i) => (
+                      <span key={i} style={{ color: i < q.difficultyRating ? '#FFD700' : 'var(--ink-200)', fontSize: 14 }}>
+                        {i < q.difficultyRating ? '★' : '☆'}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Step marking instructions guide to direct learner */}

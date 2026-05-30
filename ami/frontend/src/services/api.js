@@ -90,4 +90,5 @@ export const api = {
   // Mock Test
   generateMockTest: (body) => req('POST', '/mock-test/generate', body),
   evaluateMockTest: (body) => req('POST', '/mock-test/evaluate', body),
+  evaluateMockTestSingle: (body) => req('POST', '/mock-test/evaluate-single', body),
 }

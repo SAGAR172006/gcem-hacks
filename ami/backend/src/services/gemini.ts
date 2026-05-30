@@ -8,6 +8,7 @@ const keyCooldownUntil: number[] = new Array(total).fill(0); // 429 freeze-out
 const keyLastUsedAt:    number[] = new Array(total).fill(0); // burst protection
 const keyInUse:         boolean[] = new Array(total).fill(false);
 const keyQuotaHits:     number[]  = new Array(total).fill(0); // diagnostic counter
+const keyBlacklisted:   boolean[] = new Array(total).fill(false); // permanently banned (leaked/invalid)
 
 const MIN_REUSE_MS    = 2_000;   // 2s between reuses of the same key
 const QUOTA_FREEZE_MS = 65_000;  // freeze key for 65s on 429
@@ -34,11 +35,16 @@ function isGloballyExhausted(): boolean {
 
 export function logKeyStatus(): void {
   const now = Date.now();
-  console.log(`[Gemini] Global Key Pool status (${total} keys available):`);
+  const blacklistedCount = keyBlacklisted.filter(Boolean).length;
+  console.log(`[Gemini] Global Key Pool status (${total} keys, ${blacklistedCount} blacklisted):`);
   for (let i = 0; i < total; i++) {
     const cooling = keyCooldownUntil[i] > now;
     const recentlyUsed = (keyLastUsedAt[i] + MIN_REUSE_MS) > now;
-    const status = cooling ? '❄️ frozen' : keyInUse[i] ? '🔄 in-use' : recentlyUsed ? '⏳ cooldown' : '✅ ready';
+    const status = keyBlacklisted[i] ? '🚫 BLACKLISTED (leaked/invalid)'
+      : cooling ? '❄️ frozen'
+      : keyInUse[i] ? '🔄 in-use'
+      : recentlyUsed ? '⏳ cooldown'
+      : '✅ ready';
     console.log(`  Key ${i}: ${status}${keyQuotaHits[i] > 0 ? ` [${keyQuotaHits[i]} quota hits]` : ''}`);
   }
 }
@@ -58,6 +64,7 @@ async function acquireKey(): Promise<{ client: GoogleGenerativeAI; index: number
   // Try to find first ready key
   for (let offset = 0; offset < total; offset++) {
     const i = (globalCursor + offset) % total;
+    if (keyBlacklisted[i]) continue; // skip permanently banned keys
     const isFrozen = keyCooldownUntil[i] > now;
     const isTooRecent = (keyLastUsedAt[i] + MIN_REUSE_MS) > now;
     if (!keyInUse[i] && !isFrozen && !isTooRecent) {
@@ -178,9 +185,25 @@ async function callWithKey(
         || errStr.includes('socket hang up')
         || errStr.includes('ECONNRESET');
 
+      // Leaked, revoked, or invalid API key — permanently blacklist this key and rotate
+      const isLeakedOrInvalid = errStr.includes('reported as leaked')
+        || errStr.includes('API key not valid')
+        || errStr.includes('API_KEY_INVALID')
+        || (errStr.includes('403') && errStr.includes('Forbidden'))
+        || err?.status === 403;
+
       if (isQuota) {
         console.warn(`[Gemini] Key ${index} hit 429 quota for model ${activeModel}. Trying next model in fallback chain...`);
         continue; // Try next model on the same key
+      }
+
+      if (isLeakedOrInvalid) {
+        console.error(`[Gemini] Key ${index} is PERMANENTLY BLACKLISTED (leaked/invalid/revoked). Skipping this key forever and rotating.`);
+        keyBlacklisted[index] = true;
+        keyCooldownUntil[index] = Date.now() + 999_999_999; // freeze forever
+        release();
+        // Rotate to the next available key
+        return callWithKey(prompt, modelName, visionData, _retryCount + 1);
       }
 
       if (isNetworkError) {
@@ -188,7 +211,7 @@ async function callWithKey(
         break; // Break the model loop to rotate and try next key
       }
 
-      // Permanent/unexpected error: release key and throw immediately (e.g. invalid API key format, blocked content)
+      // Permanent/unexpected error: release key and throw immediately (e.g. blocked content, bad request)
       console.error(`[Gemini] Key ${index} failed with permanent error:`, err.message || errStr);
       release();
       throw err;
@@ -219,12 +242,60 @@ export async function callGeminiForChat(prompt: string, modelName = 'gemini-2.0-
   return callWithKey(prompt, modelName);
 }
 
+function sanitizeJsonString(raw: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+    
+    if (inString) {
+      if (escaped) {
+        result += char;
+        escaped = false;
+      } else if (char === '\\') {
+        result += char;
+        escaped = true;
+      } else if (char === '"') {
+        result += char;
+        inString = false;
+      } else if (char === '\n') {
+        result += '\\n';
+      } else if (char === '\r') {
+        result += '\\r';
+      } else if (char === '\t') {
+        result += '\\t';
+      } else {
+        const code = char.charCodeAt(0);
+        if (code < 32) {
+          result += '\\u' + code.toString(16).padStart(4, '0');
+        } else {
+          result += char;
+        }
+      }
+    } else {
+      result += char;
+      if (char === '"') {
+        inString = true;
+      }
+    }
+  }
+  return result;
+}
+
 export async function callGeminiJSON<T = any>(prompt: string): Promise<T> {
   const fullPrompt = prompt + '\n\nRespond with valid JSON only. No markdown, no code blocks, no explanation.';
   const text = await callGemini(fullPrompt);
   const cleaned = text.trim()
     .replace(/^```json\n?/, '').replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
-  return JSON.parse(cleaned) as T;
+  const sanitized = sanitizeJsonString(cleaned);
+  try {
+    return JSON.parse(sanitized) as T;
+  } catch (err: any) {
+    console.error('[Gemini] JSON parsing failed even after sanitization. Raw: ', cleaned);
+    throw err;
+  }
 }
 
 export async function callGeminiSlidesJSON<T = any>(prompt: string): Promise<T> {
@@ -232,7 +303,13 @@ export async function callGeminiSlidesJSON<T = any>(prompt: string): Promise<T> 
   const text = await callGeminiSlides(fullPrompt);
   const cleaned = text.trim()
     .replace(/^```json\n?/, '').replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
-  return JSON.parse(cleaned) as T;
+  const sanitized = sanitizeJsonString(cleaned);
+  try {
+    return JSON.parse(sanitized) as T;
+  } catch (err: any) {
+    console.error('[Gemini Slides] JSON parsing failed even after sanitization. Raw: ', cleaned);
+    throw err;
+  }
 }
 
 export async function callGeminiTestJSON<T = any>(prompt: string): Promise<T> {
@@ -240,7 +317,13 @@ export async function callGeminiTestJSON<T = any>(prompt: string): Promise<T> {
   const text = await callGeminiForTest(fullPrompt);
   const cleaned = text.trim()
     .replace(/^```json\n?/, '').replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
-  return JSON.parse(cleaned) as T;
+  const sanitized = sanitizeJsonString(cleaned);
+  try {
+    return JSON.parse(sanitized) as T;
+  } catch (err: any) {
+    console.error('[Gemini Test] JSON parsing failed even after sanitization. Raw: ', cleaned);
+    throw err;
+  }
 }
 
 export async function callGeminiVision(prompt: string, imageBuffer: Buffer, mimeType: string): Promise<string> {

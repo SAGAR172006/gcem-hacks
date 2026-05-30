@@ -17,6 +17,7 @@ export interface MockTestQuestion {
   question: string;
   suggestedAnswer: string;
   stepMarking: { step: string; marks: number }[];
+  difficultyRating?: number;
   userAnswer?: string;
   evaluation?: {
     marksObtained: number;
@@ -32,6 +33,7 @@ export interface MockTestResponse {
     question: string;
     suggestedAnswer: string;
     stepMarking: { step: string; marks: number }[];
+    difficultyRating: number;
   }[];
 }
 
@@ -81,6 +83,7 @@ export async function generateMockTest(
     '   - "marks": The mark value for this question.',
     '   - "suggestedAnswer": A comprehensive model answer displaying a step-by-step resolution.',
     '   - "stepMarking": A detailed array of steps, where each step lists "step" (the descriptive explanation of what the student needs to show in this step to get credit) and "marks" (the integer marks assigned to this specific step). The sum of all step marks MUST EXACTLY equal the question\'s marks.',
+    '   - "difficultyRating": An integer from 1 to 5 indicating the specific difficulty of this question (1 = very easy, 5 = extremely challenging).',
     '',
     'Output STRICTLY as a raw JSON object matching the schema below (no markdown code blocks, no explanation):',
     '{',
@@ -94,7 +97,8 @@ export async function generateMockTest(
     '        { "step": "Identify the formula and key variables", "marks": 1 },',
     '        { "step": "Substitute variables and calculate intermediate results", "marks": 2 },',
     '        { "step": "Provide final answer with correct units", "marks": 2 }',
-    '      ]',
+    '      ],',
+    '      "difficultyRating": 3',
     '    }',
     '  ]',
     '}'

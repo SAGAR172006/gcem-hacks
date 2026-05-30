@@ -273,9 +273,23 @@ function ImmersivePillar({ textContent, moduleId }) {
   const tocSections = c.toc || []
   const total = tocSections.length
 
+  if (total === 0) {
+    return (
+      <div style={{ padding: '80px 48px', textAlign: 'center', color: 'var(--ink-600)' }}>
+        <p style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-900)', marginBottom: 8 }}>Study Guide Generating...</p>
+        <p style={{ fontSize: 13.5, opacity: 0.8, maxWidth: 460, margin: '0 auto' }}>
+          We are currently preparing the interactive text materials for your custom syllabus. Check back here in a few moments, or explore your custom questions in the <strong>Mock Test</strong> tab!
+        </p>
+      </div>
+    );
+  }
+
+  // Find first undone section for initial render (demo starts at s3, custom starts at s1)
+  const initialSectionIdx = tocSections.findIndex(s => !s.done);
+  const [currentSection, setCurrentSection] = useState(initialSectionIdx >= 0 ? initialSectionIdx : 0)
+
   // Track quiz results per section: null | 'correct' | 'wrong'
   const [quizResults, setQuizResults] = useState(() => Array(total).fill(null))
-  const [currentSection, setCurrentSection] = useState(0)
   const [showToast, setShowToast] = useState(false)
   // Flag set when a wrong answer is given — shows the reset banner
   const [hasFailed, setHasFailed] = useState(false)
@@ -310,7 +324,8 @@ function ImmersivePillar({ textContent, moduleId }) {
 
   const handleReset = () => {
     setQuizResults(Array(total).fill(null))
-    setCurrentSection(0)
+    const freshIdx = tocSections.findIndex(s => !s.done);
+    setCurrentSection(freshIdx >= 0 ? freshIdx : 0)
     setHasFailed(false)
     setQuizResetKey(k => k + 1) // signals every InlineQuizTracked to clear its pick
   }
@@ -349,19 +364,27 @@ function ImmersivePillar({ textContent, moduleId }) {
               </div>
               <h2 className="h2" style={{ marginBottom: 16 }}>{currentLabel}</h2>
               {c.sections.map(s => {
-                if (s.kind === 'objectives') return (
-                  <div key={s.id} style={{ background: 'var(--cream-deep)', borderRadius: 'var(--r-md)', padding: '18px 22px', borderLeft: '3px solid var(--peach-300)', marginBottom: 24 }}>
-                    <h3 className="h3" style={{ marginBottom: 8 }}>{s.heading}</h3>
-                    <p className="muted" style={{ fontSize: 14, marginTop: 0 }}>By the end of this section, you should be able to:</p>
-                    <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 14, lineHeight: 1.7, color: 'var(--ink-700)' }}>{s.items.map((it, i) => <li key={i}>{it}</li>)}</ul>
-                  </div>
-                )
+                const activeTocId = tocSections[currentSection]?.id;
+
+                // Show objectives block only on the first section (Section 1)
+                if (s.kind === 'objectives') {
+                  if (currentSection !== 0) return null;
+                  return (
+                    <div key={s.id} style={{ background: 'var(--cream-deep)', borderRadius: 'var(--r-md)', padding: '18px 22px', borderLeft: '3px solid var(--peach-300)', marginBottom: 24 }}>
+                      <h3 className="h3" style={{ marginBottom: 8 }}>{s.heading}</h3>
+                      <p className="muted" style={{ fontSize: 14, marginTop: 0 }}>By the end of this section, you should be able to:</p>
+                      <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 14, lineHeight: 1.7, color: 'var(--ink-700)' }}>{s.items.map((it, i) => <li key={i}>{it}</li>)}</ul>
+                    </div>
+                  );
+                }
+
+                // Filter out sections that do not belong to the current active TOC section
+                if (activeTocId && !s.id.startsWith(activeTocId)) return null;
+
                 if (s.kind === 'prose') return (
-                  <section key={s.id}>
+                  <section key={s.id} style={{ marginBottom: 24 }}>
                     {s.heading && <h3 className="h3" style={{ marginTop: 16 }}>{s.heading}</h3>}
                     {renderProse(s.body)}
-                    {s.figure === 'leaf-cell' && <LeafCellDiagram/>}
-                    {s.figure === 'calvin-cycle' && <CalvinDiagram/>}
                   </section>
                 )
                 if (s.kind === 'inline-quiz') return (
@@ -904,202 +927,343 @@ const SCORE_RUBRIC = [
   { min: 0,  label: 'Needs review', color: 'var(--error)', emoji: '🔄' },
 ]
 
-function TestKnowledgePillar({ topic = 'Photosynthesis', moduleId = null, sourceExcerpt = '' }) {
-  const [step, setStep] = useState('prompt') // 'prompt' | 'submitted' | 'scored' | 'error'
-  const [answer, setAnswer] = useState('')
-  const [charCount, setCharCount] = useState(0)
-  const [score, setScore] = useState(null)
-  const [feedback, setFeedback] = useState(null)
-  const [gaps, setGaps] = useState([])
-  const [strengths, setStrengths] = useState([])
-  const [suggestion, setSuggestion] = useState('')
-  const [errorMsg, setErrorMsg] = useState('')
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+}
+
+function TestKnowledgePillar({ topic = 'Custom Syllabus', moduleId = null, sourceExcerpt = '', liveModule = null }) {
+  const questions = useMemo(() => {
+    const rawTest = liveModule?.mock_test
+    if (!rawTest) return []
+    const activeDifficulty = (rawTest.activeDifficulty || 'easy').toLowerCase()
+    const paper = rawTest[activeDifficulty] || rawTest
+    return paper.questions || []
+  }, [liveModule])
   const textareaRef = useRef(null)
-  const MIN_CHARS = 80
+
+  // Fisher-Yates shuffle, stable across renders
+  const shuffledQuestions = useMemo(() => {
+    const arr = [...questions]
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+    return arr
+  }, [questions])
+
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [answer, setAnswer] = useState('')
+  const [step, setStep] = useState('prompt') // 'prompt' | 'submitted' | 'scored' | 'error'
+  const [evaluationResult, setEvaluationResult] = useState(null)
+  const [errorMsg, setErrorMsg] = useState('')
+  const [timeTaken, setTimeTaken] = useState(0)
+  const [timerActive, setTimerActive] = useState(false)
+  const timerRef = useRef(null)
+  // Accumulate results for final summary
+  const [results, setResults] = useState([])
+
+  const currentQuestion = shuffledQuestions[currentIndex] || null
+  const isFinished = currentIndex >= shuffledQuestions.length && shuffledQuestions.length > 0
+
+  // Timer interval
+  useEffect(() => {
+    if (timerActive) {
+      timerRef.current = setInterval(() => setTimeTaken(p => p + 1), 1000)
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [timerActive])
+
+  const stopTimer = () => {
+    setTimerActive(false)
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
+  }
+
+  const handleTyping = (val) => {
+    setAnswer(val)
+    if (val.length > 0 && !timerActive && step === 'prompt') {
+      setTimerActive(true)
+    }
+  }
 
   const handleSubmit = async () => {
-    if (answer.trim().length < MIN_CHARS) return
+    if (!currentQuestion) return
+    stopTimer()
     setStep('submitted')
     try {
-      const result = await api.scoreExplanation(moduleId, answer, sourceExcerpt)
-      const rubric = SCORE_RUBRIC.find(r => result.score >= r.min) || SCORE_RUBRIC[SCORE_RUBRIC.length - 1]
-      setScore(result.score)
-      setFeedback(rubric)
-      setStrengths(result.strengths || [])
-      setGaps(result.gaps || [])
-      setSuggestion(result.suggestion || '')
+      const result = await api.evaluateMockTestSingle({
+        moduleId,
+        questionId: currentQuestion.id,
+        userAnswer: answer,
+        timeTaken
+      })
+      setEvaluationResult(result)
+      setResults(prev => [...prev, { question: currentQuestion, result, timeTaken }])
       setStep('scored')
     } catch (err) {
-      setErrorMsg(err.message || 'Scoring failed. Please try again.')
+      setErrorMsg(err.message || 'Evaluation failed. Please try again.')
       setStep('error')
     }
   }
 
-  const reset = () => {
-    setStep('prompt'); setAnswer(''); setCharCount(0); setScore(null)
-    setFeedback(null); setGaps([]); setStrengths([]); setSuggestion(''); setErrorMsg('')
+  const handleNext = () => {
+    setCurrentIndex(i => i + 1)
+    setAnswer('')
+    setStep('prompt')
+    setEvaluationResult(null)
+    setErrorMsg('')
+    setTimeTaken(0)
+    setTimerActive(false)
+    if (textareaRef.current) textareaRef.current.focus()
   }
+
+  const handleRetake = () => {
+    setCurrentIndex(0)
+    setAnswer('')
+    setStep('prompt')
+    setEvaluationResult(null)
+    setErrorMsg('')
+    setTimeTaken(0)
+    setTimerActive(false)
+    setResults([])
+  }
+
+  if (questions.length === 0) {
+    return (
+      <div style={{ padding: '80px 48px', textAlign: 'center', color: 'var(--ink-600)' }}>
+        <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'var(--lav-50)', display: 'grid', placeItems: 'center', margin: '0 auto 20px', color: 'var(--lav-500)' }}>
+          <Ico.Target style={{ width: 32, height: 32 }}/>
+        </div>
+        <h3 style={{ fontWeight: 700, margin: '0 0 8px', color: 'var(--ink-900)' }}>No Exam Questions Found</h3>
+        <p className="muted" style={{ fontSize: 14, maxWidth: 440, margin: '0 auto' }}>
+          Please go to the <strong>Mock Test</strong> tab and upload a syllabus PDF or enter a topic to generate your custom question paper first.
+        </p>
+      </div>
+    )
+  }
+
+  // ── Final Summary View ──
+  if (isFinished) {
+    const totalMarksEarned = results.reduce((s, r) => s + (r.result?.finalScore ?? r.result?.baseScore ?? 0), 0)
+    const totalMarksPossible = results.reduce((s, r) => s + (r.question?.marks ?? 0), 0)
+    const avgMarks = totalMarksPossible > 0 ? Math.round((totalMarksEarned / totalMarksPossible) * 100) : 0
+    const avgTime = results.length > 0 ? Math.round(results.reduce((s, r) => s + r.timeTaken, 0) / results.length) : 0
+    const rubric = SCORE_RUBRIC.find(r => avgMarks >= r.min) || SCORE_RUBRIC[SCORE_RUBRIC.length - 1]
+
+    return (
+      <div style={{ padding: '36px 48px 64px', maxWidth: 760, margin: '0 auto' }} className="fade-in">
+        {/* Summary header */}
+        <div style={{ textAlign: 'center', marginBottom: 36 }}>
+          <div style={{ fontSize: 64, marginBottom: 12 }}>{rubric.emoji}</div>
+          <h2 style={{ fontSize: 28, fontWeight: 800, color: 'var(--ink-900)', margin: '0 0 6px' }}>Test Complete!</h2>
+          <p className="muted" style={{ fontSize: 15 }}>Here's how you performed on {topic}</p>
+        </div>
+
+        {/* Stats cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
+          <div style={{ background: 'var(--paper)', border: '1px solid var(--ink-100)', borderRadius: 'var(--r-lg)', padding: '20px 16px', textAlign: 'center' }}>
+            <div style={{ fontSize: 32, fontWeight: 800, color: rubric.color }}>{avgMarks}%</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-500)', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Avg Score</div>
+          </div>
+          <div style={{ background: 'var(--paper)', border: '1px solid var(--ink-100)', borderRadius: 'var(--r-lg)', padding: '20px 16px', textAlign: 'center' }}>
+            <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--lav-500)' }}>{formatTime(avgTime)}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-500)', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Avg Time</div>
+          </div>
+          <div style={{ background: 'var(--paper)', border: '1px solid var(--ink-100)', borderRadius: 'var(--r-lg)', padding: '20px 16px', textAlign: 'center' }}>
+            <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--peach-500)' }}>{totalMarksEarned.toFixed(1)}<span style={{ fontSize: 16, color: 'var(--ink-400)' }}>/{totalMarksPossible}</span></div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink-500)', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Marks</div>
+          </div>
+        </div>
+
+        {/* Per-question breakdown */}
+        <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink-800)', marginBottom: 12 }}>Question Breakdown</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 32 }}>
+          {results.map((r, idx) => {
+            const pct = r.question.marks > 0 ? Math.round(((r.result?.finalScore ?? r.result?.baseScore ?? 0) / r.question.marks) * 100) : 0
+            const qRubric = SCORE_RUBRIC.find(rb => pct >= rb.min) || SCORE_RUBRIC[SCORE_RUBRIC.length - 1]
+            return (
+              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', background: 'var(--cream-deep)', borderRadius: 'var(--r-md)', border: '1px solid var(--ink-100)' }}>
+                <span style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--lav-200)', color: 'var(--lav-600)', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, flexShrink: 0 }}>{idx + 1}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--ink-800)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.question.question}</div>
+                </div>
+                <span style={{ fontSize: 12, color: 'var(--ink-400)', whiteSpace: 'nowrap' }}>⏱ {formatTime(r.timeTaken)}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: qRubric.color, whiteSpace: 'nowrap' }}>
+                  {(r.result?.finalScore ?? r.result?.baseScore ?? 0).toFixed(1)}/{r.question.marks}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button className="pill pill-primary" onClick={handleRetake} style={{ padding: '12px 28px', fontSize: 15 }}>
+            <Ico.ArrowLeft/> Retake Test
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Per-question rubric for scored state ──
+  const scoredPct = evaluationResult ? Math.round(((evaluationResult.finalScore ?? evaluationResult.baseScore ?? 0) / (currentQuestion?.marks || 1)) * 100) : 0
+  const rubricEntry = SCORE_RUBRIC.find(r => scoredPct >= r.min) || SCORE_RUBRIC[SCORE_RUBRIC.length - 1]
 
   return (
     <div style={{ padding: '36px 48px 64px', maxWidth: 760, margin: '0 auto' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 8 }}>
         <div style={{ width: 40, height: 40, borderRadius: 12, background: 'var(--peach-50)', display: 'grid', placeItems: 'center', color: 'var(--peach-500)' }}>
           <Ico.Target style={{ width: 20, height: 20 }}/>
         </div>
-        <div>
-          <span className="eyebrow">Test Knowledge</span>
-          <h2 className="h2" style={{ margin: 0 }}>Explain {topic} in your own words</h2>
+        <div style={{ flex: 1 }}>
+          <span className="eyebrow" style={{ color: 'var(--lav-500)' }}>Question {currentIndex + 1} of {shuffledQuestions.length}</span>
+          <h2 className="h2" style={{ margin: 0 }}>{topic}</h2>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {(timerActive || timeTaken > 0) && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 999, background: 'var(--lav-50)', color: 'var(--lav-500)', fontSize: 14, fontWeight: 700, border: '1px solid var(--lav-200)', fontVariantNumeric: 'tabular-nums', transition: 'all 0.3s var(--ease-organic)', animation: timerActive ? 'pulse-glow 2s ease-in-out infinite' : 'none' }}>
+              ⏱ {formatTime(timeTaken)}
+            </span>
+          )}
+          {step === 'scored' && (
+            <span style={{ padding: '6px 14px', borderRadius: 999, fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6, background: `color-mix(in srgb, ${rubricEntry.color} 12%, transparent)`, color: rubricEntry.color, border: `1px solid color-mix(in srgb, ${rubricEntry.color} 25%, transparent)` }}>
+              {rubricEntry.emoji} {rubricEntry.label}
+            </span>
+          )}
         </div>
       </div>
-      <p className="muted" style={{ fontSize: 14, marginBottom: 32, marginTop: 6 }}>
-        Write as if you're teaching a friend. AMI will score your understanding and tell you exactly what's missing.
-      </p>
 
-      {/* Prompt step */}
-      {step === 'prompt' && (
-        <div className="fade-in">
-          <div style={{ position: 'relative' }}>
-            <textarea
-              ref={textareaRef}
-              value={answer}
-              onChange={e => { setAnswer(e.target.value); setCharCount(e.target.value.length) }}
-              placeholder={`Explain how ${topic} works, step by step. Mention the key stages, molecules involved, where it happens in the cell, and what it produces…`}
-              style={{
-                width: '100%', minHeight: 220, padding: '18px 18px 48px', border: '1.5px solid var(--ink-100)', borderRadius: 'var(--r-md)', fontSize: 15, lineHeight: 1.7, color: 'var(--ink-900)', background: 'var(--cream)', resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box', transition: 'border-color 0.2s',
-              }}
-              onFocus={e => e.target.style.borderColor = 'var(--peach-300)'}
-              onBlur={e => e.target.style.borderColor = 'var(--ink-100)'}
-            />
-            <div style={{ position: 'absolute', bottom: 14, right: 16, fontSize: 12, color: charCount >= MIN_CHARS ? 'var(--success)' : 'var(--ink-400)', fontWeight: 600 }}>
-              {charCount} / {MIN_CHARS}+ chars
-            </div>
+      {/* Progress bar */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ height: 4, background: 'var(--ink-100)', borderRadius: 999, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${((currentIndex) / shuffledQuestions.length) * 100}%`, background: 'linear-gradient(90deg, var(--lav-300), var(--lav-500))', borderRadius: 999, transition: 'width 0.6s var(--ease-organic)' }}/>
+        </div>
+      </div>
+
+      {/* Question card */}
+      <div style={{ background: 'var(--paper)', borderRadius: 'var(--r-lg)', border: '1px solid var(--ink-100)', overflow: 'hidden', boxShadow: 'var(--shadow-sm)' }}>
+        <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--ink-100)', display: 'flex', alignItems: 'center', gap: 12, background: 'linear-gradient(135deg, var(--lav-50), var(--cream))' }}>
+          <span style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--lav-200)', color: 'var(--lav-600)', display: 'grid', placeItems: 'center', fontSize: 14, fontWeight: 800, flexShrink: 0 }}>Q</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink-900)', flex: 1 }}>
+            {currentQuestion?.question}
+            {currentQuestion?.difficultyRating && (
+              <span style={{ display: 'inline-flex', gap: 2, alignItems: 'center', marginLeft: 12 }} title={`Difficulty: ${currentQuestion.difficultyRating} / 5 stars`}>
+                {[...Array(5)].map((_, i) => (
+                  <span key={i} style={{ color: i < currentQuestion.difficultyRating ? '#FFD700' : 'var(--ink-200)', fontSize: 13 }}>
+                    {i < currentQuestion.difficultyRating ? '★' : '☆'}
+                  </span>
+                ))}
+              </span>
+            )}
+          </span>
+          <span className="subject-chip">{currentQuestion?.marks}M</span>
+        </div>
+
+        {/* Answer area */}
+        <div style={{ padding: '20px 24px' }}>
+          <textarea
+            ref={textareaRef}
+            value={answer}
+            onChange={e => handleTyping(e.target.value)}
+            onPaste={e => { e.preventDefault(); }}
+            disabled={step !== 'prompt'}
+            rows={8}
+            placeholder="Type your answer here... Timer starts when you begin typing."
+            style={{
+              width: '100%', resize: 'vertical', fontSize: 15, lineHeight: 1.7,
+              padding: '16px 20px', borderRadius: 'var(--r-md)',
+              border: '1.5px solid var(--ink-200)',
+              background: step !== 'prompt' ? 'var(--cream-deep)' : 'var(--paper)',
+              color: 'var(--ink-800)', fontFamily: 'Inter, sans-serif',
+              transition: 'border-color 0.3s, background 0.3s',
+              outline: 'none', boxSizing: 'border-box',
+            }}
+            onFocus={e => e.target.style.borderColor = 'var(--lav-400)'}
+            onBlur={e => e.target.style.borderColor = 'var(--ink-200)'}
+          />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--ink-400)' }}>{answer.length} characters</span>
+            {step === 'prompt' && (
+              <button className="pill pill-primary" onClick={handleSubmit} disabled={answer.trim().length < 10} style={{ opacity: answer.trim().length < 10 ? 0.5 : 1 }}>
+                <Ico.Sparkle/> Submit Answer
+              </button>
+            )}
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
-            <p style={{ fontSize: 13, color: 'var(--ink-400)', margin: 0 }}>
-              {charCount < MIN_CHARS ? `Write at least ${MIN_CHARS - charCount} more characters` : '✓ Ready to submit'}
-            </p>
-            <button
-              className="pill pill-primary"
-              disabled={answer.trim().length < MIN_CHARS}
-              onClick={handleSubmit}
-              style={{ opacity: answer.trim().length < MIN_CHARS ? 0.45 : 1, cursor: answer.trim().length < MIN_CHARS ? 'not-allowed' : 'pointer' }}
-            >
-              <Ico.Sparkle/> Score my answer
+        </div>
+
+        {/* Submitting state */}
+        {step === 'submitted' && (
+          <div style={{ padding: '24px', textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', border: '3px solid var(--lav-300)', borderTopColor: 'var(--lav-500)', animation: 'spin-slow 0.9s linear infinite', margin: '0 auto 12px' }}/>
+            <p style={{ fontSize: 14, color: 'var(--ink-600)', fontWeight: 500 }}>AMI is evaluating your answer...</p>
+          </div>
+        )}
+
+        {/* Error state */}
+        {step === 'error' && (
+          <div style={{ padding: '20px 24px', background: 'rgba(226,106,92,0.06)', borderTop: '1px solid rgba(226,106,92,0.2)' }}>
+            <p style={{ fontSize: 14, color: 'var(--error)', fontWeight: 600, margin: '0 0 8px' }}>⚠ Evaluation Error</p>
+            <p style={{ fontSize: 13, color: 'var(--ink-600)', margin: 0 }}>{errorMsg}</p>
+            <button className="pill pill-ghost" onClick={() => { setStep('prompt'); setErrorMsg(''); }} style={{ marginTop: 12 }}>
+              <Ico.ArrowLeft/> Try Again
             </button>
           </div>
-          <div style={{ marginTop: 24, padding: '14px 18px', background: 'var(--lav-50)', borderRadius: 'var(--r-md)', border: '1px solid var(--lav-100)', fontSize: 13, color: 'var(--ink-700)' }}>
-            <strong style={{ color: 'var(--lav-500)' }}>Tip:</strong> The best answers cover the <em>where</em> (chloroplast), <em>what</em> (reactants + products), <em>how</em> (light reactions + Calvin cycle), and <em>why</em> it matters.
-          </div>
-        </div>
-      )}
+        )}
 
-      {/* Loading step */}
-      {step === 'submitted' && (
-        <div className="fade-in" style={{ textAlign: 'center', padding: '48px 0' }}>
-          <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'var(--lav-100)', display: 'grid', placeItems: 'center', margin: '0 auto 20px', color: 'var(--lav-500)', animation: 'pulse-glow 1.6s ease-in-out infinite' }}>
-            <Ico.Brain style={{ width: 32, height: 32 }}/>
-          </div>
-          <h3 style={{ fontWeight: 700, margin: '0 0 8px' }}>AMI is reading your answer…</h3>
-          <p className="muted" style={{ fontSize: 14, margin: 0 }}>Checking for key concepts, accuracy, and depth</p>
-        </div>
-      )}
-
-      {/* Error step */}
-      {step === 'error' && (
-        <div className="fade-in" style={{ textAlign: 'center', padding: '48px 0' }}>
-          <p style={{ color: 'var(--error)', marginBottom: 16 }}>{errorMsg}</p>
-          <button className="pill pill-ghost" onClick={reset}>Try again</button>
-        </div>
-      )}
-
-      {/* Scored step */}
-      {step === 'scored' && score !== null && feedback && (
-        <div className="fade-in">
-          {/* Score ring */}
-          <div style={{ display: 'flex', gap: 32, alignItems: 'center', marginBottom: 32, flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', width: 120, height: 120, flexShrink: 0 }}>
-              <svg width="120" height="120" viewBox="0 0 120 120">
-                <circle cx="60" cy="60" r="50" fill="none" stroke="var(--ink-100)" strokeWidth="10"/>
-                <circle cx="60" cy="60" r="50" fill="none" stroke={feedback.color} strokeWidth="10"
-                  strokeDasharray={`${score * 3.14} 314`}
-                  strokeLinecap="round"
-                  transform="rotate(-90 60 60)"
-                  style={{ transition: 'stroke-dasharray 1s var(--ease-organic)' }}
-                />
-              </svg>
-              <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', textAlign: 'center' }}>
-                <div>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: feedback.color, lineHeight: 1 }}>{score}</div>
-                  <div style={{ fontSize: 11, color: 'var(--ink-400)', fontWeight: 600 }}>/ 100</div>
+        {/* Scored state */}
+        {step === 'scored' && evaluationResult && (
+          <div style={{ padding: '20px 24px', borderTop: '1px solid var(--ink-100)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Score bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <div style={{ fontSize: 36, fontWeight: 800, color: rubricEntry.color, lineHeight: 1 }}>
+                {(evaluationResult.finalScore ?? evaluationResult.baseScore ?? 0).toFixed(1)}<span style={{ fontSize: 16, color: 'var(--ink-400)', fontWeight: 500 }}>/{currentQuestion?.marks}</span>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ height: 8, background: 'var(--ink-100)', borderRadius: 999, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${scoredPct}%`, background: `linear-gradient(90deg, ${rubricEntry.color}, color-mix(in srgb, ${rubricEntry.color} 70%, white))`, borderRadius: 999, transition: 'width 0.8s var(--ease-organic)' }}/>
                 </div>
               </div>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-500)' }}>⏱ {formatTime(timeTaken)}</span>
             </div>
-            <div>
-              <div style={{ fontSize: 28, marginBottom: 4 }}>{feedback.emoji}</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: feedback.color, marginBottom: 4 }}>{feedback.label}</div>
-              <p className="muted" style={{ fontSize: 14, margin: 0 }}>
-                {score >= 90 ? 'Impressive! You have a strong grasp of this topic.' :
-                 score >= 70 ? 'Good effort! A few more concepts and you\'ll nail it.' :
-                 score >= 50 ? 'You have the basics. Review the gaps below.' :
-                 'Don\'t worry — focus on the missing concepts and try again.'}
-              </p>
+
+            {/* Feedback */}
+            {evaluationResult.feedback && (
+              <div style={{ padding: '14px 18px', background: 'var(--cream-deep)', borderRadius: 'var(--r-md)', borderLeft: `3px solid ${rubricEntry.color}`, fontSize: 14, color: 'var(--ink-700)', lineHeight: 1.65 }}>
+                <strong style={{ color: 'var(--ink-900)' }}>Feedback:</strong> {evaluationResult.feedback}
+              </div>
+            )}
+
+            {/* Step grades */}
+            {evaluationResult.stepGrades && evaluationResult.stepGrades.length > 0 && (
+              <div>
+                <h4 style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink-500)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>Step Breakdown</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {evaluationResult.stepGrades.map((sg, idx) => (
+                    <div key={idx} style={{ padding: '12px 16px', background: 'var(--cream)', borderRadius: 'var(--r-md)', border: '1px solid var(--ink-100)', borderLeft: '4px solid var(--lav-400)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <strong style={{ fontSize: 13, color: 'var(--ink-800)' }}>Step {idx + 1}: {sg.step}</strong>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--lav-600)', background: 'var(--lav-50)', padding: '2px 8px', borderRadius: 4 }}>
+                          {sg.marksObtained}M awarded
+                        </span>
+                      </div>
+                      <p style={{ fontSize: 12.5, color: 'var(--ink-600)', margin: 0 }}>{sg.feedback}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Next button */}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="pill pill-primary" onClick={handleNext} style={{ padding: '10px 22px', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {currentIndex + 1 < shuffledQuestions.length ? 'Next Question →' : 'View Summary →'}
+              </button>
             </div>
           </div>
-
-          {/* Strengths */}
-          {strengths.length > 0 && (
-            <div style={{ marginBottom: 20, padding: '16px 20px', background: 'rgba(79,176,122,0.06)', borderRadius: 'var(--r-md)', border: '1px solid var(--success)' }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--success)', marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}><Ico.Check/> What you got right</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {strengths.map((s, i) => (
-                  <div key={i} style={{ fontSize: 13, color: 'var(--ink-700)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                    <span style={{ color: 'var(--success)', flexShrink: 0, marginTop: 2 }}><Ico.Check style={{ width: 12, height: 12 }}/></span> {s}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Gaps */}
-          {gaps.length > 0 && (
-            <div style={{ marginBottom: 24, padding: '16px 20px', background: 'rgba(226,106,92,0.05)', borderRadius: 'var(--r-md)', border: '1px solid var(--error)' }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--error)', marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}><Ico.Target style={{ width: 14, height: 14 }}/> Gaps to address</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {gaps.map((g, i) => (
-                  <div key={i} style={{ fontSize: 13, color: 'var(--ink-700)', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                    <span style={{ color: 'var(--error)', flexShrink: 0, marginTop: 2 }}>•</span> {g}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* AMI suggestion */}
-          {suggestion && (
-            <div style={{ marginBottom: 20, padding: '14px 18px', background: 'var(--lav-50)', borderRadius: 'var(--r-md)', border: '1px solid var(--lav-100)', fontSize: 13, color: 'var(--ink-700)' }}>
-              <strong style={{ color: 'var(--lav-500)' }}>AMI suggests: </strong>{suggestion}
-            </div>
-          )}
-
-          {/* Your answer (collapsed) */}
-          <details style={{ marginBottom: 24 }}>
-            <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: 'var(--ink-500)', userSelect: 'none', marginBottom: 8 }}>Your answer</summary>
-            <div style={{ padding: '14px 18px', background: 'var(--cream-deep)', borderRadius: 'var(--r-md)', fontSize: 14, lineHeight: 1.7, color: 'var(--ink-700)', borderLeft: '3px solid var(--ink-200)', marginTop: 8 }}>
-              {answer}
-            </div>
-          </details>
-
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button className="pill pill-ghost" onClick={reset}>
-              <Ico.ArrowLeft/> Try again
-            </button>
-            <button className="pill pill-primary" onClick={reset} style={{ background: 'var(--lav-200)', color: 'var(--lav-500)', border: '1px solid var(--lav-300)' }}>
-              <Ico.Book/> Review Immersive Text
-            </button>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
@@ -1110,7 +1274,7 @@ const BOT_INTROS = [
   "Got a question? I'm locked in on this module — ask away.",
 ]
 
-function AIChatbot({ topic }) {
+function AIChatbot({ topic, moduleId }) {
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState([
     { role: 'bot', text: `Hi! I'm AMI. I'm here to help you understand **${topic}**. Ask me anything — definitions, examples, or how concepts connect.` }
@@ -1130,16 +1294,20 @@ function AIChatbot({ topic }) {
 
   // Simple off-topic detection: check if message mentions topic keywords
   const isOffTopic = (text) => {
+    // If not in demo mode / not Photosynthesis, bypass client-side off-topic blocking
+    if (topic !== 'Photosynthesis' && topic !== 'Photosynthesis & the Carbon Cycle') {
+      return false
+    }
     const lower = text.toLowerCase()
     const topicWords = topic.toLowerCase().split(/\s+/)
-    const relatedWords = ['what', 'how', 'why', 'explain', 'define', 'example', 'difference', 'process', 'step', 'stage', 'where', 'which', 'when', 'molecule', 'cell', 'plant', 'light', 'energy', 'reaction', 'glucose', 'oxygen', 'carbon', 'atp', 'chloro']
+    const relatedWords = ['what', 'how', 'why', 'explain', 'define', 'example', 'difference', 'process', 'step', 'stage', 'where', 'which', 'when', 'molecule', 'cell', 'plant', 'light', 'energy', 'reaction', 'glucose', 'oxygen', 'carbon', 'atp', 'chloro', 'exam', 'quiz', 'question']
     const hasTopicWord = topicWords.some(w => lower.includes(w))
     const hasRelated = relatedWords.some(w => lower.includes(w))
-    return !hasTopicWord && !hasRelated && text.length > 10
+    return !hasTopicWord && !hasRelated && text.length > 12
   }
 
-  // Mock bot responses scoped to photosynthesis
-  const getBotResponse = (userMsg) => {
+  // Fallback offline responses
+  const getOfflineBotResponse = (userMsg) => {
     const lower = userMsg.toLowerCase()
     if (lower.includes('chlorophyll') || lower.includes('green')) return 'Chlorophyll is the pigment inside chloroplasts that absorbs light — mainly red and blue wavelengths — and converts it into chemical energy. That\'s why leaves look green: chlorophyll reflects green light back to your eyes.'
     if (lower.includes('atp')) return 'ATP (adenosine triphosphate) is the energy currency of the cell. In photosynthesis, the light reactions generate ATP using sunlight, and the Calvin cycle spends that ATP to build glucose.'
@@ -1148,7 +1316,7 @@ function AIChatbot({ topic }) {
     if (lower.includes('where') || lower.includes('chloroplast')) return 'Photosynthesis happens inside the chloroplast. Light reactions occur on the thylakoid membranes; the Calvin Cycle runs in the stroma.'
     if (lower.includes('why') || lower.includes('important')) return 'Photosynthesis is the foundation of almost all food chains on Earth. It converts solar energy into chemical energy (glucose), which fuels nearly all living things — including us.'
     if (lower.includes('glucose') || lower.includes('sugar')) return 'Glucose (C₆H₁₂O₆) is the main output of photosynthesis. Plants use it for energy and as a building block for cellulose, starch, and other organic molecules.'
-    return `Good question! Regarding ${topic}: the process involves converting light energy into chemical energy stored as glucose. Could you be more specific about which part you'd like me to clarify?`
+    return `Regarding ${topic}: the process involves converting light energy into chemical energy stored as glucose. Could you be more specific about which part you'd like me to clarify?`
   }
 
   const sendMessage = () => {
@@ -1176,10 +1344,29 @@ function AIChatbot({ topic }) {
     setMessages(prev => [...prev, { role: 'user', text }])
     setInput('')
     setThinking(true)
-    setTimeout(() => {
-      setMessages(prev => [...prev, { role: 'bot', text: getBotResponse(text) }])
-      setThinking(false)
-    }, 900 + Math.random() * 600)
+
+    // Call real RAG backend endpoint if moduleId exists, otherwise fallback to offline responses
+    if (moduleId) {
+      const historyPayload = messages
+        .filter(m => !m.isWarning)
+        .map(m => ({ role: m.role === 'user' ? 'user' : 'bot', content: m.text }));
+
+      api.chat(moduleId, text, historyPayload)
+        .then(res => {
+          setMessages(prev => [...prev, { role: 'bot', text: res.reply }])
+          setThinking(false)
+        })
+        .catch(err => {
+          console.warn('[AIChatbot] RAG chat failed, falling back to offline answer:', err.message);
+          setMessages(prev => [...prev, { role: 'bot', text: getOfflineBotResponse(text) }])
+          setThinking(false)
+        });
+    } else {
+      setTimeout(() => {
+        setMessages(prev => [...prev, { role: 'bot', text: getOfflineBotResponse(text) }])
+        setThinking(false)
+      }, 800 + Math.random() * 500);
+    }
   }
 
   const handleKey = (e) => {
@@ -1320,6 +1507,154 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
   const isMockTestFirst = module?.mode === 'mocktest_first' || liveModule?.mode === 'mocktest_first' || module?.topic === 'Custom Syllabus Exam'
   const [tab, setTab] = useState(isMockTestFirst ? 'mocktest' : 'text')
 
+  // ── DYNAMIC LOCAL STUDY MATERIAL GENERATION (Client-side, No API keys) ─────
+  const localTextContent = useMemo(() => {
+    const rawTest = liveModule?.mock_test
+    if (!rawTest) return null
+    
+    const diffKey = (rawTest.activeDifficulty || 'medium').toLowerCase()
+    const paper = rawTest[diffKey] || rawTest
+    const questions = paper.questions || []
+    if (questions.length === 0) return null
+
+    const sections = [
+      {
+        id: 'obj',
+        kind: 'objectives',
+        heading: 'Learning Objectives',
+        items: rawTest.pointers || [
+          "Understand the core architecture and principles.",
+          "Analyze key hardware integrations and configurations.",
+          "Compare memory, processing and peripheral execution."
+        ]
+      }
+    ];
+
+    questions.forEach((q, idx) => {
+      // 1. Prose section for the concept
+      sections.push({
+        id: `s${idx + 1}-prose`,
+        kind: 'prose',
+        heading: `${idx + 1}. Concept: ${q.question.replace(/\?$/, '')}`,
+        body: q.suggestedAnswer || "Examine the core details and step-by-step marking rubrics to verify standard execution."
+      });
+
+      // 2. Interactive Multiple Choice Quiz built purely locally!
+      const correctStep = q.stepMarking && q.stepMarking[0] ? q.stepMarking[0].step : "Identify the correct formula and principles";
+      sections.push({
+        id: `s${idx + 1}-quiz`,
+        kind: 'inline-quiz',
+        question: `What is a primary rubric step for: "${q.question}"?`,
+        hint: `Think about what must be verified in the grading instructions.`,
+        choices: [
+          { id: 'a', text: correctStep, correct: true },
+          { id: 'b', text: "Ignore all architectural constraints and formulas.", correct: false },
+          { id: 'c', text: "Rely purely on manual guesswork without logical steps.", correct: false },
+          { id: 'd', text: "Apply generic, unrelated answers to the question.", correct: false }
+        ].sort(() => Math.random() - 0.5)
+      });
+    });
+
+    return {
+      title: liveModule.title || liveModule.topic || 'Custom Syllabus Exam',
+      subtitle: `Dynamic Client-Side Study Guide`,
+      toc: sections
+        .filter(s => s.kind === 'prose')
+        .map((s, i) => ({ id: `s${i + 1}`, title: s.heading.replace(/^\d+\.\s+Concept:\s+/, ''), done: false, current: i === 0 })),
+      sections
+    };
+  }, [liveModule]);
+
+  const localMindmap = useMemo(() => {
+    const rawTest = liveModule?.mock_test
+    if (!rawTest) return []
+    
+    const pointers = rawTest.pointers || []
+    if (pointers.length === 0) return []
+
+    const nodes = [
+      { id: 'root', parent: null, label: liveModule.topic || 'Topic', x: 0, y: 0, type: 'root' }
+    ];
+
+    const N = pointers.length;
+    pointers.forEach((pointer, i) => {
+      const angle = (i * 2 * Math.PI) / N;
+      const radius = 240;
+      const x = Math.round(radius * Math.cos(angle));
+      const y = Math.round(radius * Math.sin(angle));
+      const nodeId = `node_${i}`;
+      
+      nodes.push({
+        id: nodeId,
+        parent: 'root',
+        label: pointer.length > 30 ? pointer.substring(0, 30) + '...' : pointer,
+        x,
+        y,
+        type: 'concept'
+      });
+
+      // Add 2 detail child subnodes for visual depth
+      const subAngle1 = angle - 0.12;
+      const subAngle2 = angle + 0.12;
+      const subRadius = radius + 115;
+      
+      nodes.push({
+        id: `${nodeId}_sub1`,
+        parent: nodeId,
+        label: "Evaluation Guide",
+        x: Math.round(subRadius * Math.cos(subAngle1)),
+        y: Math.round(subRadius * Math.sin(subAngle1)),
+        type: 'fact'
+      });
+
+      nodes.push({
+        id: `${nodeId}_sub2`,
+        parent: nodeId,
+        label: "Detailed Rubric",
+        x: Math.round(subRadius * Math.cos(subAngle2)),
+        y: Math.round(subRadius * Math.sin(subAngle2)),
+        type: 'fact'
+      });
+    });
+
+    return nodes;
+  }, [liveModule]);
+
+  const localAudioContent = useMemo(() => {
+    const rawTest = liveModule?.mock_test
+    if (!rawTest) return null
+    
+    const pointers = rawTest.pointers || []
+    const diffKey = (rawTest.activeDifficulty || 'medium').toLowerCase()
+    const paper = rawTest[diffKey] || rawTest
+    const questions = paper.questions || []
+    
+    const chapters = [];
+    let scriptText = '';
+    
+    pointers.forEach((pointer, idx) => {
+      const matchingQ = questions.find(q => q.stepMarking && q.stepMarking.some(sm => sm.step === pointer));
+      const explanation = matchingQ 
+        ? `Let's discuss this concept: ${pointer}. ${matchingQ.suggestedAnswer}` 
+        : `Let's study: ${pointer}. This concept focuses on understanding the core theoretical principles and marking rubrics.`;
+        
+      const chapterTitle = pointer.length > 40 ? pointer.substring(0, 40) + '...' : pointer;
+      chapters.push({ title: chapterTitle, text: explanation });
+      scriptText += `[CHAPTER: ${chapterTitle}] \n ${explanation} \n\n`;
+    });
+
+    if (chapters.length === 0) {
+      chapters.push({ title: "Introduction", text: "Welcome to your custom syllabus study guide." });
+      scriptText = "[CHAPTER: Introduction] \n Welcome to your custom syllabus study guide.";
+    }
+
+    return {
+      title: liveModule.topic || 'Custom Syllabus Exam',
+      script: scriptText,
+      chapters
+    };
+  }, [liveModule]);
+
   const activePillars = useMemo(() => {
     const list = [
       { id: 'source', label: 'Source', icon: 'Pdf', color: 'var(--ink-700)' },
@@ -1372,18 +1707,26 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
     return () => clearInterval(interval)
   }, [module?.id, moduleStatus])
 
-  // textContent is ready once it has actual sections (Phase 2 filled them in)
-  const hasTextContent = liveModule?.textContent?.sections?.length > 0
+  // textContent is ready once it has actual sections (Phase 2 filled them in or generated locally)
+  const hasTextContent = liveModule?.textContent?.sections?.length > 0 || localTextContent !== null
+  const isDemoMode = liveModule?.topic === 'Photosynthesis' || module?.topic === 'Photosynthesis' || (!liveModule?.topic && !module?.topic)
+  
   const c = (isMockTestFirst && !liveModule?.mock_test)
     ? { title: liveModule?.topic || 'Custom Syllabus Exam', subtitle: 'Upload a syllabus PDF to generate your exam & study materials', sections: [] }
-    : (hasTextContent ? liveModule.textContent : PHOTO_CONTENT)
+    : (liveModule?.textContent?.sections?.length > 0 ? liveModule.textContent : (localTextContent || (isDemoMode ? PHOTO_CONTENT : { title: liveModule?.topic || 'Custom Syllabus Exam', subtitle: 'Detailed study guide for this module', sections: [], toc: [] })))
+
+  const headerTitle = liveModule?.title || liveModule?.topic || module?.topic || 'Custom Syllabus Exam'
+  const headerSubtitle = (isMockTestFirst && !liveModule?.mock_test)
+    ? 'Upload a syllabus PDF to generate your exam & study materials'
+    : (liveModule?.textContent?.subtitle || liveModule?.mock_test?.instructions || 'Interactive study guide and mock test')
+
   const moduleId = liveModule?.id || null
-  const sourceExcerpt = liveModule?.source?.sourceExcerpt || ''
+  const sourceExcerpt = liveModule?.source?.sourceExcerpt || liveModule?.source?.excerpt || ''
 
   const isGenerating = moduleStatus === 'generating'
   const hasSlides = liveModule?.slides?.length > 0
-  const hasMindmap = liveModule?.mindmap?.length > 0
-  const hasAudio = liveModule?.audio?.chapters?.length > 0
+  const hasMindmap = liveModule?.mindmap?.length > 0 || localMindmap.length > 0
+  const hasAudio = liveModule?.audio?.chapters?.length > 0 || localAudioContent !== null
 
   return (
     <div style={{ paddingBottom: 64 }} className="fade-in">
@@ -1391,7 +1734,7 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
       <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 32px 16px', display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
         <button className="link-btn" onClick={onBack}><Ico.ArrowLeft/> All modules</button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ fontSize: 'clamp(28px,3.4vw,40px)', fontWeight: 700, letterSpacing: '-0.025em', margin: 0 }}>{c.title}</h2>
+          <h2 style={{ fontSize: 'clamp(28px,3.4vw,40px)', fontWeight: 700, letterSpacing: '-0.025em', margin: 0 }}>{headerTitle}</h2>
           {isGenerating && (
             <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', padding: '4px 12px', background: 'var(--peach-50)', borderRadius: 999, fontSize: 12, color: 'var(--peach-500)', fontWeight: 600, border: '1px solid var(--peach-100)', flexShrink: 0 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--peach-400)', animation: 'pulse-glow 1.4s ease-in-out infinite', display: 'block' }}/>
@@ -1399,7 +1742,7 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
             </div>
           )}
         </div>
-        <p className="muted" style={{ fontSize: 14, margin: 0 }}>{c.subtitle}</p>
+        <p className="muted" style={{ fontSize: 14, margin: 0 }}>{headerSubtitle}</p>
       </div>
       <div style={{ maxWidth: 1100, margin: '24px auto 0', background: 'var(--paper)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-md)', border: '1px solid rgba(45,30,15,0.04)', overflow: 'hidden' }}>
         <PillarTabs active={tab} onChange={setTab} pillars={activePillars}/>
@@ -1411,11 +1754,11 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
           )}
           {tab === 'audio' && (isGenerating || !hasAudio
             ? <GeneratingPlaceholder mediaType="Audio Lesson"/>
-            : <AudioPillar audioContent={liveModule?.audio}/>
+            : <AudioPillar audioContent={liveModule?.audio?.chapters?.length > 0 ? liveModule.audio : localAudioContent}/>
           )}
           {tab === 'mind' && (isGenerating || !hasMindmap
             ? <GeneratingPlaceholder mediaType="Mindmap"/>
-            : <MindmapPillar mindmap={liveModule.mindmap}/>
+            : <MindmapPillar mindmap={liveModule?.mindmap?.length > 0 ? liveModule.mindmap : localMindmap}/>
           )}
           {tab === 'mocktest' && (
             <MockTestPillar 
@@ -1425,24 +1768,42 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
                 if (mockTest && mockTest.moduleId) {
                   try {
                     const fullMod = await api.getModule(mockTest.moduleId)
-                    setLiveModule(fullMod)
+                    setLiveModule({
+                      ...fullMod,
+                      topic: fullMod.topic || mockTest.topic,
+                      title: fullMod.title || mockTest.title || fullMod.topic || mockTest.topic,
+                      source: fullMod.source || mockTest.source
+                    })
                     setModuleStatus('complete')
                   } catch (err) {
                     console.error('Failed to load full module after mock test generation:', err)
-                    setLiveModule(prev => ({ ...prev, id: mockTest.moduleId, mock_test: mockTest }))
+                    setLiveModule(prev => ({
+                      ...prev,
+                      id: mockTest.moduleId,
+                      topic: mockTest.topic || prev.topic,
+                      title: mockTest.title || prev.title,
+                      source: mockTest.source || prev.source,
+                      mock_test: mockTest
+                    }))
                   }
                 } else {
-                  setLiveModule(prev => ({ ...prev, mock_test: mockTest }))
+                  setLiveModule(prev => ({
+                    ...prev,
+                    topic: mockTest?.topic || prev.topic,
+                    title: mockTest?.title || prev.title,
+                    source: mockTest?.source || prev.source,
+                    mock_test: mockTest
+                  }))
                 }
               }}
             />
           )}
-          {tab === 'test' && <TestKnowledgePillar topic={c.title} moduleId={moduleId} sourceExcerpt={sourceExcerpt}/>}
+          {tab === 'test' && <TestKnowledgePillar topic={c.title} moduleId={moduleId} sourceExcerpt={sourceExcerpt} liveModule={liveModule}/>}
         </div>
       </div>
 
       {/* Floating chatbot — visible on all tabs except when mock test is first and no syllabus uploaded yet */}
-      {!(isMockTestFirst && !liveModule?.mock_test) && <AIChatbot topic={c.title}/>}
+      {!(isMockTestFirst && !liveModule?.mock_test) && <AIChatbot topic={c.title} moduleId={moduleId}/>}
     </div>
   )
 }

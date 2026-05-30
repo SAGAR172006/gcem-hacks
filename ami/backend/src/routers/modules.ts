@@ -9,6 +9,7 @@ import { supabase } from '../services/supabase';
 import { callGeminiVision } from '../services/gemini';
 import { Module, Persona, SourceContent, MasterContext } from '../types';
 import { generateMockTest } from '../agents/mockTestAgent';
+import { buildMaterialsFromSourceText } from '../agents/pointersAgent';
 
 export const modulesRouter = Router();
 modulesRouter.use(requireAuth);
@@ -59,11 +60,34 @@ async function runBackgroundPhase2(
 ) {
   try {
     console.log('[Modules] Background Phase 2 starting for ' + moduleId);
-    const { textContent, slides, mindmap, audio } = await runPhase2(source, masterContext, persona);
+    
+    // Generate custom pointer-based study guide from uploaded source text or fallback
+    let textContent: any = null;
+    let mindmap: any = null;
+    let audio: any = null;
+    let pointers: string[] = [];
+
+    try {
+      const materials = await buildMaterialsFromSourceText(
+        masterContext.topic,
+        source.sourceExcerpt || masterContext.oneLiner || masterContext.topic,
+        persona
+      );
+      textContent = materials.textContent;
+      mindmap = materials.mindmap;
+      audio = materials.audio;
+      pointers = materials.pointers;
+    } catch (err: any) {
+      console.warn('[Modules] Background pointers-based generation failed, falling back to standard runPhase2:', err.message);
+      const standard = await runPhase2(source, masterContext, persona);
+      textContent = standard.textContent;
+      mindmap = standard.mindmap;
+      audio = standard.audio;
+    }
 
     // Mode B: Generate automatic mock test in background using prose text content
     const combinedTextProse = textContent.sections
-      .map(s => s.body || '')
+      .map((s: any) => s.body || '')
       .filter(Boolean)
       .join('\n\n');
 
@@ -99,11 +123,12 @@ async function runBackgroundPhase2(
 
     await supabase.from('modules').update({
       text_content: textContent,
-      slides,
+      slides: [],
       mindmap,
       audio,
       mock_test: mockTestObj,
       status: 'complete',
+      pointers: pointers
     }).eq('id', moduleId);
     console.log('[Modules] Phase 2 complete for ' + moduleId);
   } catch (err: any) {
