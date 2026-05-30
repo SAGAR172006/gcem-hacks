@@ -47,7 +47,8 @@ export default function LoadingPage({ topic, fromUpload, onGenerate, onDone }) {
     run()
 
     return () => clearInterval(tick)
-  }, [onGenerate, onDone])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const current = phases[phase]
   const labels = ['Search', 'Extract', 'Personalize', 'Generate']

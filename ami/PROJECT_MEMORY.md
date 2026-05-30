@@ -255,47 +255,30 @@ Plus:
 
 ## 10. Current Status
 
-**As of:** May 2026
+**As of:** Late May 2026
 
 ### ✅ Completed
-- [x] Vite + React project scaffold (manual, no npm registry needed)
-- [x] Full design system (globals.css, TopBar, Icons)
-- [x] LandingPage (peach waves, hero search, visualizer card)
-- [x] LoginPage (4 modes, eye-tracking characters, animated panel)
-- [x] DashboardPage (login-aware: history grid for users, "How it works" for guests)
-- [x] LoadingPage (orb, rings, particles, 4-phase checklist)
-- [x] QuickLearningPage (glass card, multi-file drop zone, deadline picker)
-- [x] LearningHub — 6 tabs:
-  - Source, Immersive Text (roadmap), Slides, Audio, Mindmap, Test Knowledge
-- [x] Floating AI Chatbot (2-strike off-topic system)
-- [x] TopBar UserMenu (Personalize / Account Settings / Log out — all wired)
-- [x] PersonaModal (reading level + interests)
-- [x] AccountSettingsModal (name/age/qualification + Delete Account)
-- [x] Auth state (login/logout/delete in App.jsx)
-- [x] Roadmap progress bar in ImmersivePillar (vertical, resets on wrong, toast on complete)
+- [x] Vite + React frontend & Node.js + Express + TypeScript backend.
+- [x] Full design system (globals.css, TopBar, Icons, responsive pastel layout).
+- [x] LandingPage (peach waves, hero search, visualizer card).
+- [x] LoginPage (4 modes, eye-tracking characters, animated panel).
+- [x] DashboardPage (login-aware history grid, guest "How it works" tiles, and new Mock Test quick entry).
+- [x] LoadingPage (orb, rings, particles, 4-phase background progress checklist).
+- [x] QuickLearningPage (glass card, multi-file drop uploader, deadline picker).
+- [x] LearningHub — 5 active pillars with Slides & Images completely disabled/removed to save credits:
+  - Source, Immersive Text (roadmap), Audio Lesson, Mindmap, Test Knowledge.
+- [x] AI-based Mock Test Integration (PDF syllabus uploader, dynamic marks distribution grid, step-marked grading, and answer evaluation scoring).
+- [x] Global content caching matching/cloning layer via SHA256 hashes to prevent redundant Gemini API usage.
+- [x] Dynamic round-robin rotation over 27 keys in `gemini.ts`.
+- [x] Floating AI Chatbot (2-strike off-topic warn-lock system).
+- [x] TopBar UserMenu (Personalize, Account Settings, Log out).
+- [x] PersonaModal (reading level + interests).
+- [x] AccountSettingsModal (name/age/qualification + confirmation delete).
+- [x] Auth state & persistence (login/signup/restore in App.jsx).
 
 ### 🔲 What's Left
-
-**Frontend:**
-- [ ] Connect real Gemini API calls (replace mock content in LearningHub/content.js)
-- [ ] Persist learning history in localStorage or backend
-- [ ] Real Google OAuth flow
-- [ ] Mobile responsiveness pass (tab bar wraps awkwardly on small screens)
-- [ ] Slide "auto-play" narration sync (currently just timer-based)
-- [ ] Audio player with real TTS audio
-
-**Backend:**
-- [ ] FastAPI project setup
-- [ ] Auth endpoints (email + Google)
-- [ ] Search & Scrape agent
-- [ ] Immersive Text agent
-- [ ] Slides + Narration agent
-- [ ] Audio agent (TTS)
-- [ ] Mindmap agent
-- [ ] Image generation agent
-- [ ] RAG Chatbot (topic-locked)
-- [ ] API key rotation middleware
-- [ ] Module storage (PostgreSQL or Supabase)
+- [ ] Production build and CDN hosting of the static assets.
+- [ ] Multi-region redundancy checks for database endpoints.
 
 ---
 

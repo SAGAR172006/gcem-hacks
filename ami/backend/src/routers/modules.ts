@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import fileUpload from 'express-fileupload';
 import pdfParse from 'pdf-parse';
+import crypto from 'crypto';
 import { requireAuth } from '../middleware/auth';
 import { runPhase1, runPhase2 } from '../agents/orchestrator';
 import { supabase } from '../services/supabase';
 import { callGeminiVision } from '../services/gemini';
 import { Module, Persona, SourceContent, MasterContext } from '../types';
+import { generateMockTest } from '../agents/mockTestAgent';
 
 export const modulesRouter = Router();
 modulesRouter.use(requireAuth);
@@ -58,11 +60,49 @@ async function runBackgroundPhase2(
   try {
     console.log('[Modules] Background Phase 2 starting for ' + moduleId);
     const { textContent, slides, mindmap, audio } = await runPhase2(source, masterContext, persona);
+
+    // Mode B: Generate automatic mock test in background using prose text content
+    const combinedTextProse = textContent.sections
+      .map(s => s.body || '')
+      .filter(Boolean)
+      .join('\n\n');
+
+    let mockTestObj = null;
+    try {
+      console.log('[Modules] Background Phase 2 generating automatic Mock Test (Mode B)...');
+      const defaultDistribution = [
+        { marks: 2, count: 3 },
+        { marks: 4, count: 2 },
+        { marks: 6, count: 1 }
+      ];
+      const mockTestResult = await generateMockTest(combinedTextProse || masterContext.oneLiner, {
+        maxMarks: 20,
+        distribution: defaultDistribution,
+        instructions: 'Generate questions matching the text content sections.'
+      });
+      if (mockTestResult && mockTestResult.questions) {
+        mockTestObj = {
+          id: uuidv4(),
+          topic: masterContext.topic,
+          maxMarks: 20,
+          instructions: '',
+          questions: mockTestResult.questions.map((q: any) => ({
+            id: 'q_' + uuidv4(),
+            ...q
+          })),
+          isEvaluated: false
+        };
+      }
+    } catch (mockErr: any) {
+      console.error('[Modules] Automatic Mock Test generation failed:', mockErr.message);
+    }
+
     await supabase.from('modules').update({
       text_content: textContent,
       slides,
       mindmap,
       audio,
+      mock_test: mockTestObj,
       status: 'complete',
     }).eq('id', moduleId);
     console.log('[Modules] Phase 2 complete for ' + moduleId);
@@ -78,10 +118,66 @@ modulesRouter.post('/generate', async (req, res) => {
     const { topic, persona } = req.body;
     if (!topic || !persona) return res.status(400).json({ error: 'Topic and persona are required' });
 
+    const cleanedTopic = topic.trim();
     const enrichedPersona = await enrichPersona(req.user!.id, persona);
 
+    // Cache lookup: Find completed module with matching topic (case-insensitive)
+    const { data: cachedModule } = await supabase
+      .from('modules')
+      .select('*')
+      .eq('status', 'complete')
+      .ilike('topic', cleanedTopic)
+      .limit(1)
+      .maybeSingle();
+
+    if (cachedModule) {
+      console.log(`[Modules] Cache HIT for topic: "${cleanedTopic}". Cloning completed module...`);
+      const moduleId = uuidv4();
+      const moduleObj: Module = {
+        id: moduleId,
+        userId: req.user!.id,
+        topic: cleanedTopic,
+        persona: enrichedPersona,
+        source: cachedModule.source,
+        masterContext: cachedModule.master_context,
+        textContent: cachedModule.text_content,
+        slides: cachedModule.slides,
+        mindmap: cachedModule.mindmap,
+        audio: cachedModule.audio,
+        progress: 0,
+        fromUpload: cachedModule.from_upload,
+        deadline: null,
+        createdAt: new Date().toISOString(),
+      };
+
+      const { error: insertError } = await supabase.from('modules').insert({
+        id: moduleObj.id,
+        user_id: moduleObj.userId,
+        topic: moduleObj.topic,
+        persona: moduleObj.persona,
+        source: moduleObj.source,
+        master_context: moduleObj.masterContext,
+        text_content: moduleObj.textContent,
+        slides: moduleObj.slides,
+        mindmap: moduleObj.mindmap,
+        audio: moduleObj.audio,
+        progress: moduleObj.progress,
+        from_upload: moduleObj.fromUpload,
+        deadline: moduleObj.deadline,
+        status: 'complete',
+        mock_test: cachedModule.mock_test,
+        source_hash: cachedModule.source_hash,
+      });
+
+      if (!insertError) {
+        return res.json({ ...moduleObj, status: 'complete', mock_test: cachedModule.mock_test });
+      }
+      console.error('[Modules] Error inserting cloned module:', insertError.message);
+    }
+
     // Phase 1: search + Lead Agent → MasterContext (~15-20s)
-    const { source, masterContext } = await runPhase1(topic, enrichedPersona);
+    const { source, masterContext } = await runPhase1(cleanedTopic, enrichedPersona);
+    const sourceHash = crypto.createHash('sha256').update(source.sourceExcerpt || '').digest('hex');
 
     const moduleId = uuidv4();
 
@@ -124,6 +220,7 @@ modulesRouter.post('/generate', async (req, res) => {
       from_upload: moduleObj.fromUpload,
       deadline: moduleObj.deadline,
       status: 'generating',
+      source_hash: sourceHash,
     });
     if (error) throw new Error(error.message);
 
@@ -143,6 +240,14 @@ modulesRouter.post('/upload', async (req, res) => {
     if (!req.files || !req.files.files) return res.status(400).json({ error: 'No files uploaded' });
     let rawFiles = req.files.files;
     const files: fileUpload.UploadedFile[] = Array.isArray(rawFiles) ? rawFiles : [rawFiles];
+    
+    // Validate file size (10 MB limit)
+    for (const file of files) {
+      if (file.size > 10 * 1024 * 1024) {
+        return res.status(400).json({ error: `File "${file.name}" exceeds the 10 MB size limit.` });
+      }
+    }
+
     const persona: Persona = JSON.parse(req.body.persona || '{}');
     const deadline = req.body.deadline || null;
 
@@ -164,15 +269,70 @@ modulesRouter.post('/upload', async (req, res) => {
     if (!combinedText.trim()) return res.status(400).json({ error: 'No extractable text found in files.' });
     combinedText = combinedText.substring(0, 8000);
 
+    const sourceHash = crypto.createHash('sha256').update(combinedText).digest('hex');
+    const enrichedPersona = await enrichPersona(req.user!.id, persona);
     const topic = files[0].name.replace(/\.[^.]+$/, '');
+
+    // Cache lookup: Find completed module with matching source hash
+    const { data: cachedModule } = await supabase
+      .from('modules')
+      .select('*')
+      .eq('status', 'complete')
+      .eq('source_hash', sourceHash)
+      .limit(1)
+      .maybeSingle();
+
+    if (cachedModule) {
+      console.log(`[Modules] Cache HIT for uploaded content (hash: ${sourceHash}). Cloning module...`);
+      const moduleId = uuidv4();
+      const moduleObj: Module = {
+        id: moduleId,
+        userId: req.user!.id,
+        topic,
+        persona: enrichedPersona,
+        source: cachedModule.source,
+        masterContext: cachedModule.master_context,
+        textContent: cachedModule.text_content,
+        slides: cachedModule.slides,
+        mindmap: cachedModule.mindmap,
+        audio: cachedModule.audio,
+        progress: 0,
+        fromUpload: true,
+        deadline,
+        createdAt: new Date().toISOString(),
+      };
+
+      const { error: insertError } = await supabase.from('modules').insert({
+        id: moduleObj.id,
+        user_id: moduleObj.userId,
+        topic: moduleObj.topic,
+        persona: moduleObj.persona,
+        source: moduleObj.source,
+        master_context: moduleObj.masterContext,
+        text_content: moduleObj.textContent,
+        slides: moduleObj.slides,
+        mindmap: moduleObj.mindmap,
+        audio: moduleObj.audio,
+        progress: moduleObj.progress,
+        from_upload: moduleObj.fromUpload,
+        deadline: moduleObj.deadline,
+        status: 'complete',
+        mock_test: cachedModule.mock_test,
+        source_hash: sourceHash,
+      });
+
+      if (!insertError) {
+        return res.json({ ...moduleObj, status: 'complete', mock_test: cachedModule.mock_test });
+      }
+      console.error('[Modules] Error inserting cloned module:', insertError.message);
+    }
+
     const source: SourceContent = {
       topic,
       sourceTitle: 'Uploaded material',
       sourceExcerpt: combinedText,
       sourceUrl: null,
     };
-
-    const enrichedPersona = await enrichPersona(req.user!.id, persona);
 
     // Phase 1: Lead Agent compresses the uploaded text → MasterContext
     const { source: _, masterContext } = await runPhase1(topic, enrichedPersona, true, source);
@@ -215,6 +375,7 @@ modulesRouter.post('/upload', async (req, res) => {
       from_upload: moduleObj.fromUpload,
       deadline: moduleObj.deadline,
       status: 'generating',
+      source_hash: sourceHash,
     });
     if (error) throw new Error(error.message);
 
@@ -258,6 +419,7 @@ modulesRouter.get('/:id', async (req, res) => {
       textContent: data.text_content,
       fromUpload: data.from_upload,
       createdAt: data.created_at,
+      mock_test: data.mock_test,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -267,12 +429,12 @@ modulesRouter.get('/:id', async (req, res) => {
 modulesRouter.get('/:id/status', async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from('modules').select('id, status, slides, mindmap, audio, text_content')
+      .from('modules').select('id, status, slides, mindmap, audio, text_content, mock_test')
       .eq('id', req.params.id)
       .eq('user_id', req.user!.id)
       .single();
     if (error || !data) return res.status(404).json({ error: 'Module not found' });
-    res.json({ ...data, textContent: data.text_content });
+    res.json({ ...data, textContent: data.text_content, mock_test: data.mock_test });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

@@ -86,4 +86,8 @@ export const api = {
   scoreExplanation: (moduleId, explanation, sourceExcerpt) =>
     req('POST', '/stats/score-explanation', { moduleId, explanation, sourceExcerpt }),
   getMyStats: () => req('GET', '/stats/me'),
+
+  // Mock Test
+  generateMockTest: (body) => req('POST', '/mock-test/generate', body),
+  evaluateMockTest: (body) => req('POST', '/mock-test/evaluate', body),
 }

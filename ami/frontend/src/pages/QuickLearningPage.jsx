@@ -183,6 +183,7 @@ export default function QuickLearningPage({ persona, onChangePersona, onAccountS
   const [files, setFiles] = useState([])
   const [deadline, setDeadline] = useState(null)
   const [titleOverride, setTitleOverride] = useState('')
+  const [error, setError] = useState('')
 
   const canSubmit = files.length > 0
 
@@ -258,13 +259,32 @@ export default function QuickLearningPage({ persona, onChangePersona, onAccountS
               <Ico.Upload style={{ width: 14, height: 14, display: 'inline', marginRight: 6, verticalAlign: 'middle', color: 'var(--peach-500)' }}/>
               Your material
             </div>
+            {error && (
+              <div style={{ padding: '12px 16px', background: 'rgba(226,106,92,0.08)', border: '1px solid var(--error)', borderRadius: 'var(--r-md)', fontSize: 13.5, color: 'var(--error)', marginBottom: 20, fontWeight: 500 }}>
+                ⚠️ {error}
+              </div>
+            )}
+
             <DropZone
               files={files}
-              onFiles={(f) => setFiles(prev => {
-                const names = new Set(prev.map(x => x.name))
-                return [...prev, ...f.filter(x => !names.has(x.name))]
-              })}
-              onClear={() => setFiles([])}
+              onFiles={(f) => {
+                setError('')
+                const tooLarge = f.filter(x => x.size > 10 * 1024 * 1024)
+                if (tooLarge.length > 0) {
+                  setError(`The following files exceed the 10 MB size limit: ${tooLarge.map(x => x.name).join(', ')}.`)
+                }
+                const valid = f.filter(x => x.size <= 10 * 1024 * 1024)
+                if (valid.length > 0) {
+                  setFiles(prev => {
+                    const names = new Set(prev.map(x => x.name))
+                    return [...prev, ...valid.filter(x => !names.has(x.name))]
+                  })
+                }
+              }}
+              onClear={() => {
+                setFiles([])
+                setError('')
+              }}
             />
           </div>
 

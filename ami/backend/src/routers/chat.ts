@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase';
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config';
-import { getChatKeyIndex } from '../services/gemini';
+import { getNextApiKey } from '../services/gemini';
 
 export const chatRouter = Router();
 
@@ -50,10 +50,10 @@ chatRouter.post('/embed/:moduleId', async (req, res) => {
       }
     }
 
-    // 3. Generate embeddings — use dedicated chat key
-    const chatKeyIdx = getChatKeyIndex();
+    // 3. Generate embeddings — use dynamic rotated key
+    const apiKey = await getNextApiKey();
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: config.geminiKeys[chatKeyIdx],
+      apiKey: apiKey,
       modelName: 'embedding-001'
     });
 
@@ -98,10 +98,10 @@ chatRouter.post('/', async (req, res) => {
 
     if (error || !moduleData) return res.status(404).json({ error: 'Module not found' });
 
-    // 2. Generate embedding for the user's message — use dedicated chat key
-    const chatKeyIdx = getChatKeyIndex();
+    // 2. Generate embedding for the user's message — use dynamic rotated key
+    const apiKey = await getNextApiKey();
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: config.geminiKeys[chatKeyIdx],
+      apiKey: apiKey,
       modelName: 'embedding-001'
     });
     const messageEmbedding = await embeddings.embedQuery(message);
@@ -140,8 +140,9 @@ Rules:
       parts: [{ text: msg.content }]
     }));
 
-    // 7. Call Gemini with dedicated chat key
-    const genAI = new GoogleGenerativeAI(config.geminiKeys[chatKeyIdx]);
+    // 7. Call Gemini with dynamic rotated key
+    const apiKeyForChat = await getNextApiKey();
+    const genAI = new GoogleGenerativeAI(apiKeyForChat);
     const geminiModel = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       systemInstruction: systemPrompt

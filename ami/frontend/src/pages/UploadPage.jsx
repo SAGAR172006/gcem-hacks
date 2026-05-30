@@ -5,10 +5,16 @@ import { TopBar } from '../components/layout/TopBar.jsx'
 export default function UploadPage({ persona, onPersonaChange, onSubmit, onBack, dark, onToggleDark }) {
   const [dragging, setDragging] = useState(false)
   const [file, setFile] = useState(null)
+  const [error, setError] = useState('')
   const inputRef = useRef(null)
 
   const handleFile = (f) => {
     if (!f) return
+    setError('')
+    if (f.size > 10 * 1024 * 1024) {
+      setError(`File "${f.name}" exceeds the 10 MB size limit.`)
+      return
+    }
     setFile(f)
   }
 
@@ -32,6 +38,12 @@ export default function UploadPage({ persona, onPersonaChange, onSubmit, onBack,
         <h1 style={{ fontSize: 'clamp(32px,4vw,48px)', fontWeight: 700, letterSpacing: '-0.03em', margin: '8px 0 8px' }}>Upload your material</h1>
         <p className="muted" style={{ fontSize: 16, marginBottom: 32 }}>Upload a PDF or image and AMI will generate a full learning module from it — scoped entirely to your file.</p>
 
+        {error && (
+          <div style={{ padding: '12px 16px', background: 'rgba(226,106,92,0.08)', border: '1px solid var(--error)', borderRadius: 'var(--r-md)', fontSize: 13.5, color: 'var(--error)', marginBottom: 20, fontWeight: 500 }}>
+            ⚠️ {error}
+          </div>
+        )}
+
         <div
           onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
           onDragLeave={() => setDragging(false)}
@@ -47,7 +59,7 @@ export default function UploadPage({ persona, onPersonaChange, onSubmit, onBack,
               <p style={{ fontWeight: 700, fontSize: 18, margin: '0 0 4px' }}>{file.name}</p>
               <p className="muted" style={{ fontSize: 14, margin: '0 0 24px' }}>{(file.size / 1024).toFixed(1)} KB</p>
               <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                <button className="pill pill-ghost" onClick={(e) => { e.stopPropagation(); setFile(null) }}>Change file</button>
+                <button className="pill pill-ghost" onClick={(e) => { e.stopPropagation(); setFile(null); setError(''); }}>Change file</button>
                 <button className="pill pill-primary" onClick={(e) => { e.stopPropagation(); submit() }}><Ico.Sparkle/> Generate module</button>
               </div>
             </>

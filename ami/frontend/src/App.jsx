@@ -286,6 +286,22 @@ export default function App() {
     }
   }
 
+  const onMockTestTrigger = (q) => {
+    setCurrentModule({
+      id: null,
+      topic: q?.trim() || 'Custom Syllabus Exam',
+      persona: { grade, interest },
+      status: 'complete',
+      mode: 'mocktest_first',
+      mock_test: null,
+      textContent: { title: q?.trim() || 'Custom Syllabus', subtitle: 'Step-by-step marked AI Exam', sections: [] },
+      slides: [],
+      mindmap: [],
+      audio: { chapters: [] }
+    });
+    setRoute('hub');
+  }
+
   // Shared topbar props
   const topbarProps = {
     persona,
@@ -343,6 +359,7 @@ export default function App() {
           }}
           onLand={() => setRoute('landing')}
           onLogin={() => setRoute('login')}
+          onMockTestTrigger={onMockTestTrigger}
         />
       )}
       {route === 'upload' && (

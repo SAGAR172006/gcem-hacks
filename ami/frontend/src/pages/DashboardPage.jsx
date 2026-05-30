@@ -164,7 +164,7 @@ const DEMO_IDS = {
   'How Transformers Work': 'demo-transformers',
 }
 
-export default function DashboardPage({ persona, onChangePersona, onAccountSettings, onLogout, onSearch, onUpload, onResume, onDemoLoad, onLand, onLogin, dark, onToggleDark, user }) {
+export default function DashboardPage({ persona, onChangePersona, onAccountSettings, onLogout, onSearch, onUpload, onResume, onDemoLoad, onLand, onLogin, dark, onToggleDark, user, onMockTestTrigger }) {
   const [query, setQuery] = useState('')
   const [modules, setModules] = useState([])
 
@@ -205,8 +205,11 @@ export default function DashboardPage({ persona, onChangePersona, onAccountSetti
           <span style={{ color: 'var(--ink-300)', display: 'flex' }}><Ico.Search/></span>
           <input placeholder='Try "Photosynthesis" or paste a Wikipedia link…' value={query} onChange={e => setQuery(e.target.value)} style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 17, color: 'var(--ink-900)', outline: 'none', padding: '12px 0', letterSpacing: '-0.01em' }}/>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <button type="button" onClick={onUpload} style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--cream-deep)', color: 'var(--ink-700)', display: 'grid', placeItems: 'center' }}>
+            <button type="button" onClick={onUpload} title="Upload material" style={{ width: 40, height: 40, borderRadius: '50%', background: 'var(--cream-deep)', color: 'var(--ink-700)', display: 'grid', placeItems: 'center', border: 'none', cursor: 'pointer' }}>
               <Ico.Upload/>
+            </button>
+            <button type="button" onClick={() => onMockTestTrigger(query)} style={{ padding: '12px 18px', fontSize: 13.5, background: 'var(--lav-50)', color: 'var(--lav-600)', border: '1.5px solid var(--lav-200)', borderRadius: 999, cursor: 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6, transition: 'all 0.2s' }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--lav-100)' }} onMouseLeave={e => { e.currentTarget.style.background = 'var(--lav-50)' }}>
+              <Ico.Target style={{ width: 14, height: 14 }}/> Mock Test
             </button>
             <button type="submit" className="pill pill-primary" style={{ padding: '12px 20px', fontSize: 14 }}>
               <Ico.Sparkle/> Generate

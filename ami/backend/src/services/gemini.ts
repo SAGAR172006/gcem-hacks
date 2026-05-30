@@ -1,37 +1,9 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config';
 
-// ─── Key pool layout ───────────────────────────────────────────────────────────
-// Key 0        → dedicated to AI Chatbot
-// Key 1        → dedicated to Test Knowledge scoring
-// Keys 2..mid  → "primary" pool  (Lead Agent + Text Agent)
-// Keys mid+1.. → "secondary" pool (Slides Agent)
-//
-// WHY we split primary/secondary:
-// Text agent and slides agent fire at the same time (Phase 2).
-// If they share a pool they race for the same keys → burst 429s.
-// Splitting the pool means they NEVER fight each other.
-//
-// With 25 keys:  0=chat, 1=test, 2-13=primary (12 keys), 14-24=secondary (11 keys)
-// With 10 keys:  0=chat, 1=test, 2-5=primary (4 keys), 6-9=secondary (4 keys)
-// With 4 keys:   0=chat, 1=test, 2=primary, 3=secondary
-// With <4 keys:  all share the same pool (graceful fallback)
-
 const total = config.geminiKeys.length;
-const CHAT_KEY_IDX = 0;
-const TEST_KEY_IDX = Math.min(1, total - 1);
-const AGENT_START  = Math.min(2, total - 1);
 
-// Split agent keys into two non-overlapping halves
-const agentKeyCount = Math.max(0, total - AGENT_START);
-const primaryCount   = Math.ceil(agentKeyCount / 2);
-const PRIMARY_END    = AGENT_START + primaryCount;          // exclusive
-// secondary starts right after primary
-const SECONDARY_START = PRIMARY_END;                        // inclusive
-// If there are no secondary keys, secondary falls back to primary pool
-const hasSecondaryPool = SECONDARY_START < total;
-
-// Per-key state
+// Global arrays for tracking key usage
 const keyCooldownUntil: number[] = new Array(total).fill(0); // 429 freeze-out
 const keyLastUsedAt:    number[] = new Array(total).fill(0); // burst protection
 const keyInUse:         boolean[] = new Array(total).fill(false);
@@ -39,96 +11,78 @@ const keyQuotaHits:     number[]  = new Array(total).fill(0); // diagnostic coun
 
 const MIN_REUSE_MS    = 2_000;   // 2s between reuses of the same key
 const QUOTA_FREEZE_MS = 65_000;  // freeze key for 65s on 429
+const MAX_FULL_ROTATIONS = 3;    // give up after cycling through all keys this many times
 
-// (cursors defined below, after acquireFromPool is declared)
+let globalCursor = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Print a summary of key health (call this from routes to diagnose)
+/** Reset all quota hit counters — called when a key succeeds, proving quota is available again */
+function onKeySuccess(index: number): void {
+  keyQuotaHits[index] = 0;
+}
+
+/** Check if every key has been exhausted too many times (global exhaustion) */
+function isGloballyExhausted(): boolean {
+  const now = Date.now();
+  const allFrozen = keyCooldownUntil.every(t => t > now);
+  const allHitHard = keyQuotaHits.every(h => h >= MAX_FULL_ROTATIONS);
+  return allFrozen && allHitHard;
+}
+
 export function logKeyStatus(): void {
   const now = Date.now();
-  console.log('[Gemini] Pool layout: chat=0, test=1, primary=' + AGENT_START + '..' + (PRIMARY_END-1) + ', secondary=' + (hasSecondaryPool ? SECONDARY_START + '..' + (total-1) : 'none (fallback to primary)'));
-  for (let i = AGENT_START; i < total; i++) {
-    const pool = i < PRIMARY_END ? 'primary' : 'secondary';
+  console.log(`[Gemini] Global Key Pool status (${total} keys available):`);
+  for (let i = 0; i < total; i++) {
     const cooling = keyCooldownUntil[i] > now;
     const recentlyUsed = (keyLastUsedAt[i] + MIN_REUSE_MS) > now;
     const status = cooling ? '❄️ frozen' : keyInUse[i] ? '🔄 in-use' : recentlyUsed ? '⏳ cooldown' : '✅ ready';
-    console.log('  Key ' + i + ' [' + pool + ']: ' + status + (keyQuotaHits[i] > 0 ? ' [' + keyQuotaHits[i] + ' quota hits]' : ''));
+    console.log(`  Key ${i}: ${status}${keyQuotaHits[i] > 0 ? ` [${keyQuotaHits[i]} quota hits]` : ''}`);
   }
-  const primaryReady = Array.from({length: PRIMARY_END - AGENT_START}, (_, i) => AGENT_START + i)
-    .filter(i => keyCooldownUntil[i] <= now && !keyInUse[i] && (keyLastUsedAt[i] + MIN_REUSE_MS) <= now).length;
-  const secReady = hasSecondaryPool
-    ? Array.from({length: total - SECONDARY_START}, (_, i) => SECONDARY_START + i)
-        .filter(i => keyCooldownUntil[i] <= now && !keyInUse[i] && (keyLastUsedAt[i] + MIN_REUSE_MS) <= now).length
-    : 'n/a';
-  console.log('[Gemini] Ready — primary: ' + primaryReady + '/' + (PRIMARY_END - AGENT_START) + ', secondary: ' + secReady + (hasSecondaryPool ? '/' + (total - SECONDARY_START) : ''));
 }
 
-// ─── Dedicated key acquire (chat / test) ─────────────────────────────────────
-
-async function acquireDedicatedKey(idx: number): Promise<{ client: GoogleGenerativeAI; release: () => void }> {
-  const freezeWait = keyCooldownUntil[idx] - Date.now();
-  if (freezeWait > 0) {
-    console.warn('[Gemini] Dedicated key ' + idx + ' frozen. Waiting ' + Math.ceil(freezeWait / 1000) + 's...');
-    await sleep(freezeWait + 100);
-  }
-  while (keyInUse[idx]) await sleep(200);
-  keyInUse[idx] = true;
-  keyLastUsedAt[idx] = Date.now();
-  return {
-    client: new GoogleGenerativeAI(config.geminiKeys[idx]),
-    release: () => { keyInUse[idx] = false; },
-  };
-}
-
-// ─── Generic pool acquire (picks from a contiguous range of key indices) ──────
-
-async function acquireFromPool(
-  poolStart: number,
-  poolEnd: number,   // exclusive
-  poolName: string,
-  rrRef: { cursor: number }
-): Promise<{ client: GoogleGenerativeAI; index: number; release: () => void }> {
-  const poolSize = poolEnd - poolStart;
-  if (poolSize <= 0) {
-    // Fallback: use dedicated key 0
-    const { client, release } = await acquireDedicatedKey(0);
-    return { client, index: 0, release };
-  }
-
+// Global acquire key: rotates through all keys
+async function acquireKey(): Promise<{ client: GoogleGenerativeAI; index: number; release: () => void }> {
   const now = Date.now();
 
-  // Try each key starting from cursor — find first available
-  for (let offset = 0; offset < poolSize; offset++) {
-    const i = poolStart + ((rrRef.cursor - poolStart + offset) % poolSize);
-    const isFrozen    = keyCooldownUntil[i] > now;
+  // CIRCUIT BREAKER: if every key has been quota-hit multiple times and all are frozen, fail fast
+  if (isGloballyExhausted()) {
+    throw new Error(
+      'ALL_KEYS_EXHAUSTED: All Gemini API keys have hit their rate limits. ' +
+      'Please wait 1-2 minutes for quotas to reset, or add more API keys.'
+    );
+  }
+
+  // Try to find first ready key
+  for (let offset = 0; offset < total; offset++) {
+    const i = (globalCursor + offset) % total;
+    const isFrozen = keyCooldownUntil[i] > now;
     const isTooRecent = (keyLastUsedAt[i] + MIN_REUSE_MS) > now;
     if (!keyInUse[i] && !isFrozen && !isTooRecent) {
       keyInUse[i] = true;
       keyLastUsedAt[i] = now;
-      rrRef.cursor = poolStart + ((i - poolStart + 1) % poolSize);
-      console.log('[Gemini] Acquired ' + poolName + ' key ' + i);
+      globalCursor = (i + 1) % total;
       return {
         client: new GoogleGenerativeAI(config.geminiKeys[i]),
         index: i,
-        release: () => { keyInUse[i] = false; },
+        release: () => { keyInUse[i] = false; }
       };
     }
   }
 
-  // All keys busy/cooling — find soonest available (skip deeply frozen)
-  let soonestIdx = poolStart;
+  // All keys are busy or frozen: find soonest available (skipping deeply frozen)
+  let soonestIdx = 0;
   let soonestTime = Infinity;
-  for (let i = poolStart; i < poolEnd; i++) {
-    if (keyCooldownUntil[i] > Date.now() + 30_000) continue;
+  for (let i = 0; i < total; i++) {
+    if (keyCooldownUntil[i] > now + 30_000) continue; // skip deeply frozen
     const available = Math.max(keyCooldownUntil[i], keyLastUsedAt[i] + MIN_REUSE_MS);
     if (available < soonestTime) { soonestTime = available; soonestIdx = i; }
   }
-  // If all deeply frozen, pick absolute soonest
+
   if (soonestTime === Infinity) {
-    for (let i = poolStart; i < poolEnd; i++) {
+    for (let i = 0; i < total; i++) {
       const available = Math.max(keyCooldownUntil[i], keyLastUsedAt[i] + MIN_REUSE_MS);
       if (available < soonestTime) { soonestTime = available; soonestIdx = i; }
     }
@@ -136,97 +90,134 @@ async function acquireFromPool(
 
   const waitMs = Math.max(0, soonestTime - Date.now());
   if (waitMs > 0) {
-    console.warn('[Gemini] All ' + poolName + ' keys busy. Waiting ' + Math.ceil(waitMs / 1000) + 's for key ' + soonestIdx);
-    logKeyStatus();
+    console.warn(`[Gemini] All keys busy. Waiting ${Math.ceil(waitMs / 1000)}s for key ${soonestIdx}`);
     await sleep(waitMs + 100);
   }
+
   while (keyInUse[soonestIdx]) await sleep(200);
+
   keyInUse[soonestIdx] = true;
   keyLastUsedAt[soonestIdx] = Date.now();
-  rrRef.cursor = poolStart + ((soonestIdx - poolStart + 1) % poolSize);
-  console.log('[Gemini] Acquired ' + poolName + ' key ' + soonestIdx + ' (after wait)');
+  globalCursor = (soonestIdx + 1) % total;
   return {
     client: new GoogleGenerativeAI(config.geminiKeys[soonestIdx]),
     index: soonestIdx,
-    release: () => { keyInUse[soonestIdx] = false; },
+    release: () => { keyInUse[soonestIdx] = false; }
   };
 }
 
-// Cursors wrapped in objects so acquireFromPool can mutate them by reference
-const rrPrimaryRef   = { cursor: AGENT_START };
-const rrSecondaryRef = { cursor: hasSecondaryPool ? SECONDARY_START : AGENT_START };
-
-// Primary pool: Lead Agent + Text Agent
-async function acquireAgentKey(): Promise<{ client: GoogleGenerativeAI; index: number; release: () => void }> {
-  return acquireFromPool(AGENT_START, PRIMARY_END, 'primary', rrPrimaryRef);
+// For external libraries (like Langchain), we just return a rotated key string
+export async function getNextApiKey(): Promise<string> {
+  const { index, release } = await acquireKey();
+  release();
+  return config.geminiKeys[index];
 }
 
-// Secondary pool: Slides Agent (non-overlapping with primary → no racing)
-async function acquireSecondaryKey(): Promise<{ client: GoogleGenerativeAI; index: number; release: () => void }> {
-  if (!hasSecondaryPool) {
-    // Not enough keys — fall back to primary pool gracefully
-    return acquireFromPool(AGENT_START, PRIMARY_END, 'primary(fallback)', rrPrimaryRef);
-  }
-  return acquireFromPool(SECONDARY_START, total, 'secondary', rrSecondaryRef);
+export function getChatKeyIndex(): number {
+  return 0; // fallback for old code
 }
 
-// ─── Core call helper ─────────────────────────────────────────────────────────
+export function getTestKeyIndex(): number {
+  return 1; // fallback for old code
+}
 
 async function callWithKey(
-  client: GoogleGenerativeAI,
-  index: number,
-  release: () => void,
   prompt: string,
   modelName: string,
-  retryFn: () => Promise<string>,
+  visionData?: { buffer: Buffer; mimeType: string },
+  _retryCount = 0
 ): Promise<string> {
-  try {
-    const model = client.getGenerativeModel({ model: modelName });
-    const result = await model.generateContent(prompt);
-    release();
-    return result.response.text();
-  } catch (err: any) {
-    release();
-    const isQuota = err?.status === 429
-      || String(err).includes('429')
-      || String(err).includes('RESOURCE_EXHAUSTED');
-    if (isQuota) {
-      keyCooldownUntil[index] = Date.now() + QUOTA_FREEZE_MS;
-      keyQuotaHits[index]++;
-      console.warn('[Gemini] Key ' + index + ' quota hit #' + keyQuotaHits[index] + '. Frozen 65s. Trying next key...');
-      logKeyStatus();
-      return retryFn();
-    }
-    throw err;
+  // CIRCUIT BREAKER: max retries = 3 full rotations through all keys
+  const maxRetries = total * MAX_FULL_ROTATIONS;
+  if (_retryCount >= maxRetries) {
+    console.error(`[Gemini] Exhausted ${maxRetries} retries across all ${total} keys. Giving up.`);
+    throw new Error(
+      'ALL_KEYS_EXHAUSTED: All Gemini API keys have hit their rate limits after ' +
+      `${_retryCount} attempts. Please wait 1-2 minutes and try again.`
+    );
   }
+
+  const { client, index, release } = await acquireKey();
+
+  // Define our model fallback chain with active, verified 2026 models
+  const models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
+  const modelChain = models.includes(modelName)
+    ? [modelName, ...models.filter(m => m !== modelName)]
+    : [modelName, ...models];
+
+  // Try each model in our chain for this acquired key
+  for (let m = 0; m < modelChain.length; m++) {
+    const activeModel = modelChain[m];
+    try {
+      console.log(`[Gemini] Attempting Key ${index} with model ${activeModel} (attempt ${_retryCount + 1}/${maxRetries})...`);
+      const model = client.getGenerativeModel({ model: activeModel });
+      let response;
+      if (visionData) {
+        response = await model.generateContent([
+          prompt,
+          { inlineData: { data: visionData.buffer.toString('base64'), mimeType: visionData.mimeType } }
+        ]);
+      } else {
+        response = await model.generateContent(prompt);
+      }
+      
+      // Success! Release and return
+      release();
+      onKeySuccess(index);
+      return response.response.text();
+    } catch (err: any) {
+      const errStr = String(err);
+      const isQuota = err?.status === 429
+        || errStr.includes('429')
+        || errStr.includes('RESOURCE_EXHAUSTED');
+      
+      const isNetworkError = errStr.includes('fetch failed')
+        || errStr.includes('ENOTFOUND')
+        || errStr.includes('ETIMEDOUT')
+        || errStr.includes('timeout')
+        || errStr.includes('socket hang up')
+        || errStr.includes('ECONNRESET');
+
+      if (isQuota) {
+        console.warn(`[Gemini] Key ${index} hit 429 quota for model ${activeModel}. Trying next model in fallback chain...`);
+        continue; // Try next model on the same key
+      }
+
+      if (isNetworkError) {
+        console.warn(`[Gemini] Key ${index} encountered transient network error with model ${activeModel}: ${err.message || errStr}. Retrying with next key...`);
+        break; // Break the model loop to rotate and try next key
+      }
+
+      // Permanent/unexpected error: release key and throw immediately (e.g. invalid API key format, blocked content)
+      console.error(`[Gemini] Key ${index} failed with permanent error:`, err.message || errStr);
+      release();
+      throw err;
+    }
+  }
+
+  // If we got here, all models in the fallback chain returned a 429 or a network error occurred
+  release();
+  keyCooldownUntil[index] = Date.now() + QUOTA_FREEZE_MS;
+  keyQuotaHits[index]++;
+  console.warn(`[Gemini] Key ${index} exhausted. Frozen 65s. Rotating to next key...`);
+  return callWithKey(prompt, modelName, visionData, _retryCount + 1);
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-// Primary pool (Lead Agent + Text Agent)
 export async function callGemini(prompt: string, modelName = 'gemini-2.0-flash'): Promise<string> {
-  const { client, index, release } = await acquireAgentKey();
-  return callWithKey(client, index, release, prompt, modelName, () => callGemini(prompt, modelName));
+  return callWithKey(prompt, modelName);
 }
 
-// Secondary pool (Slides Agent) — isolated so it never races with text generation
 export async function callGeminiSlides(prompt: string, modelName = 'gemini-2.0-flash'): Promise<string> {
-  const { client, index, release } = await acquireSecondaryKey();
-  return callWithKey(client, index, release, prompt, modelName, () => callGeminiSlides(prompt, modelName));
+  return callWithKey(prompt, modelName);
 }
 
 export async function callGeminiForTest(prompt: string, modelName = 'gemini-2.0-flash'): Promise<string> {
-  const { client, release } = await acquireDedicatedKey(TEST_KEY_IDX);
-  return callWithKey(client, TEST_KEY_IDX, release, prompt, modelName, () => callGeminiForTest(prompt, modelName));
+  return callWithKey(prompt, modelName);
 }
 
 export async function callGeminiForChat(prompt: string, modelName = 'gemini-2.0-flash'): Promise<string> {
-  const { client, release } = await acquireDedicatedKey(CHAT_KEY_IDX);
-  return callWithKey(client, CHAT_KEY_IDX, release, prompt, modelName, () => callGeminiForChat(prompt, modelName));
+  return callWithKey(prompt, modelName);
 }
-
-export function getChatKeyIndex(): number { return CHAT_KEY_IDX; }
-export function getTestKeyIndex(): number { return TEST_KEY_IDX; }
 
 export async function callGeminiJSON<T = any>(prompt: string): Promise<T> {
   const fullPrompt = prompt + '\n\nRespond with valid JSON only. No markdown, no code blocks, no explanation.';
@@ -253,24 +244,5 @@ export async function callGeminiTestJSON<T = any>(prompt: string): Promise<T> {
 }
 
 export async function callGeminiVision(prompt: string, imageBuffer: Buffer, mimeType: string): Promise<string> {
-  const { client, index, release } = await acquireAgentKey();
-  try {
-    const model = client.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: imageBuffer.toString('base64'), mimeType } }
-    ]);
-    release();
-    return result.response.text();
-  } catch (err: any) {
-    release();
-    const isQuota = err?.status === 429 || String(err).includes('429') || String(err).includes('RESOURCE_EXHAUSTED');
-    if (isQuota) {
-      keyCooldownUntil[index] = Date.now() + QUOTA_FREEZE_MS;
-      keyQuotaHits[index]++;
-      console.warn('[Gemini Vision] Key ' + index + ' quota hit. Retrying...');
-      return callGeminiVision(prompt, imageBuffer, mimeType);
-    }
-    throw err;
-  }
+  return callWithKey(prompt, 'gemini-2.0-flash', { buffer: imageBuffer, mimeType });
 }

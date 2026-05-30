@@ -2,7 +2,6 @@ import { Persona, SourceContent, TextContent, Slide, MindmapNode, AudioContent, 
 import { searchAndScrape } from './searchAgent';
 import { generateMasterContext } from './leadAgent';
 import { generateImmersiveText } from './textAgent';
-import { generateSlides } from './slidesAgent';
 import { buildMindmapFromContext } from './mindmapAgent';
 import { buildAudioFromTextContent } from './audioAgent';
 
@@ -90,16 +89,10 @@ export async function runPhase2(
   const mindmap = buildMindmapFromContext(masterContext);
 
   // Text fires immediately (primary key pool).
-  // Slides fires 3s later (secondary key pool — completely separate keys).
-  // The stagger is just extra safety; the pool split already prevents racing.
-  const textPromise = generateImmersiveText(masterContext, persona);
+  const textContent = await generateImmersiveText(masterContext, persona);
 
-  await sleep(3000); // 3s stagger — gives primary pool time to settle
-
-  const slidesPromise = generateSlides(masterContext, persona);
-
-  // Wait for both to complete
-  const [textContent, slides] = await Promise.all([textPromise, slidesPromise]);
+  // Slides are completely disabled to save API keys
+  const slides: Slide[] = [];
 
   // Audio is built from the completed textContent prose (zero Gemini calls)
   console.log('[Orchestrator] Phase 2: Building audio from text content (no AI call)...');

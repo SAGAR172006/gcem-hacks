@@ -3,21 +3,14 @@ import { Ico } from '../components/ui/Icons.jsx'
 import { TopBar } from '../components/layout/TopBar.jsx'
 import { PHOTO_CONTENT } from '../data/content.js'
 import { api } from '../services/api.js'
+import MockTestPillar from '../components/MockTestPillar.jsx'
 
 // ── Tab bar ──────────────────────────────────────────────────────────────────
-const PILLARS = [
-  { id: 'source', label: 'Source', icon: 'Pdf', color: 'var(--ink-700)' },
-  { id: 'text', label: 'Immersive Text', icon: 'Book', color: 'var(--peach-500)' },
-  { id: 'slides', label: 'Slides & Narration', icon: 'Slides', color: 'var(--lav-500)' },
-  { id: 'audio', label: 'Audio Lesson', icon: 'Audio', color: 'var(--success)' },
-  { id: 'mind', label: 'Mindmap', icon: 'Mind', color: 'var(--info)' },
-  { id: 'test', label: 'Test Knowledge', icon: 'Target', color: 'var(--peach-500)' },
-]
 
-function PillarTabs({ active, onChange }) {
+function PillarTabs({ active, onChange, pillars }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${PILLARS.length}, 1fr)`, gap: 4, padding: '12px 16px', borderBottom: '1px solid var(--ink-100)', overflowX: 'auto' }}>
-      {PILLARS.map(p => {
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${pillars.length}, 1fr)`, gap: 4, padding: '12px 16px', borderBottom: '1px solid var(--ink-100)', overflowX: 'auto' }}>
+      {pillars.map(p => {
         const Icon = Ico[p.icon]
         const isActive = active === p.id
         return (
@@ -1321,10 +1314,31 @@ function GeneratingPlaceholder({ mediaType }) {
 
 // ── Learning Hub ──────────────────────────────────────────────────────────────
 export default function LearningHub({ module, persona, onChangePersona, onAccountSettings, onLogout, onBack, dark, onToggleDark, user }) {
-  const [tab, setTab] = useState('text')
   // Live module state — updates as background generation completes
   const [liveModule, setLiveModule] = useState(module)
   const [moduleStatus, setModuleStatus] = useState(module?.status || 'complete')
+  const isMockTestFirst = module?.mode === 'mocktest_first' || liveModule?.mode === 'mocktest_first' || module?.topic === 'Custom Syllabus Exam'
+  const [tab, setTab] = useState(isMockTestFirst ? 'mocktest' : 'text')
+
+  const activePillars = useMemo(() => {
+    const list = [
+      { id: 'source', label: 'Source', icon: 'Pdf', color: 'var(--ink-700)' },
+      { id: 'text', label: 'Immersive Text', icon: 'Book', color: 'var(--peach-500)' },
+      { id: 'audio', label: 'Audio Lesson', icon: 'Audio', color: 'var(--success)' },
+      { id: 'mind', label: 'Mindmap', icon: 'Mind', color: 'var(--info)' },
+      { id: 'mocktest', label: 'Mock Test', icon: 'Target', color: 'var(--lav-500)' },
+      { id: 'test', label: 'Test Knowledge', icon: 'Target', color: 'var(--peach-500)' },
+    ];
+    if (isMockTestFirst) {
+      const mockItem = list.find(p => p.id === 'mocktest');
+      if (!liveModule?.mock_test) {
+        return [mockItem];
+      }
+      const others = list.filter(p => p.id !== 'mocktest');
+      return [mockItem, ...others];
+    }
+    return list;
+  }, [isMockTestFirst, liveModule?.mock_test]);
 
   // Poll for module status every 5s until complete
   useEffect(() => {
@@ -1336,16 +1350,17 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
         const data = await api.getModuleStatus(module.id)
         setModuleStatus(data.status)
         if (data.status === 'complete') {
-          // Merge all Phase 2 data into liveModule (text, slides, mindmap, audio)
+          // Merge all Phase 2 data into liveModule (text, mindmap, audio)
           setLiveModule(prev => ({
             ...prev,
             status: 'complete',
             textContent: (data.textContent && data.textContent.sections?.length > 0)
               ? data.textContent
               : prev?.textContent || null,
-            slides: data.slides || prev?.slides || [],
+            slides: [],
             mindmap: data.mindmap || prev?.mindmap || [],
-            audio: data.audio || prev?.audio || { title: '', script: '', chapters: [] }
+            audio: data.audio || prev?.audio || { title: '', script: '', chapters: [] },
+            mock_test: data.mock_test || prev?.mock_test || null
           }))
           clearInterval(interval)
         }
@@ -1359,7 +1374,9 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
 
   // textContent is ready once it has actual sections (Phase 2 filled them in)
   const hasTextContent = liveModule?.textContent?.sections?.length > 0
-  const c = hasTextContent ? liveModule.textContent : PHOTO_CONTENT
+  const c = (isMockTestFirst && !liveModule?.mock_test)
+    ? { title: liveModule?.topic || 'Custom Syllabus Exam', subtitle: 'Upload a syllabus PDF to generate your exam & study materials', sections: [] }
+    : (hasTextContent ? liveModule.textContent : PHOTO_CONTENT)
   const moduleId = liveModule?.id || null
   const sourceExcerpt = liveModule?.source?.sourceExcerpt || ''
 
@@ -1385,16 +1402,12 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
         <p className="muted" style={{ fontSize: 14, margin: 0 }}>{c.subtitle}</p>
       </div>
       <div style={{ maxWidth: 1100, margin: '24px auto 0', background: 'var(--paper)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-md)', border: '1px solid rgba(45,30,15,0.04)', overflow: 'hidden' }}>
-        <PillarTabs active={tab} onChange={setTab}/>
+        <PillarTabs active={tab} onChange={setTab} pillars={activePillars}/>
         <div key={tab} style={{ animation: 'slide-in-right 0.5s var(--ease-organic)' }}>
           {tab === 'source' && <SourcePillar source={liveModule?.source}/>}
           {tab === 'text' && (isGenerating && !hasTextContent
             ? <GeneratingPlaceholder mediaType="Immersive Text"/>
             : <ImmersivePillar textContent={c} moduleId={moduleId}/>
-          )}
-          {tab === 'slides' && (isGenerating || !hasSlides
-            ? <GeneratingPlaceholder mediaType="Slides & Narration"/>
-            : <SlidesPillar slides={liveModule.slides}/>
           )}
           {tab === 'audio' && (isGenerating || !hasAudio
             ? <GeneratingPlaceholder mediaType="Audio Lesson"/>
@@ -1404,12 +1417,32 @@ export default function LearningHub({ module, persona, onChangePersona, onAccoun
             ? <GeneratingPlaceholder mediaType="Mindmap"/>
             : <MindmapPillar mindmap={liveModule.mindmap}/>
           )}
+          {tab === 'mocktest' && (
+            <MockTestPillar 
+              moduleId={moduleId} 
+              liveModule={liveModule} 
+              onUpdateMockTest={async (mockTest) => {
+                if (mockTest && mockTest.moduleId) {
+                  try {
+                    const fullMod = await api.getModule(mockTest.moduleId)
+                    setLiveModule(fullMod)
+                    setModuleStatus('complete')
+                  } catch (err) {
+                    console.error('Failed to load full module after mock test generation:', err)
+                    setLiveModule(prev => ({ ...prev, id: mockTest.moduleId, mock_test: mockTest }))
+                  }
+                } else {
+                  setLiveModule(prev => ({ ...prev, mock_test: mockTest }))
+                }
+              }}
+            />
+          )}
           {tab === 'test' && <TestKnowledgePillar topic={c.title} moduleId={moduleId} sourceExcerpt={sourceExcerpt}/>}
         </div>
       </div>
 
-      {/* Floating chatbot — visible on all tabs */}
-      <AIChatbot topic={c.title}/>
+      {/* Floating chatbot — visible on all tabs except when mock test is first and no syllabus uploaded yet */}
+      {!(isMockTestFirst && !liveModule?.mock_test) && <AIChatbot topic={c.title}/>}
     </div>
   )
 }
